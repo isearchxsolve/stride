@@ -1,0 +1,301 @@
+// Copyright (c) .NET Foundation and Contributors (https://dotnetfoundation.org/ & https://stride3d.net) and Silicon Studio Corp. (https://www.siliconstudio.co.jp)
+// Distributed under the MIT license. See the LICENSE.md file in the project root for more information.
+//
+// Copyright (c) 2010-2012 SharpDX - Alexandre Mutel
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+// THE SOFTWARE.
+
+namespace Stride.Graphics;
+
+/// <summary>
+///   Contains information about the general features supported by a <see cref="GraphicsDevice"/>, as well as
+///   supported features specific to a particular pixel format or data format.
+/// </summary>
+/// <remarks>
+///   <para>
+///     To obtain information about the supported features for a particular format, use the <see cref="this[PixelFormat]">indexer</see>.
+///   </para>
+///   <para>
+///     Each field says what Stride can use on this device with this graphics backend. When the backend does not
+///     implement something, it reports <see langword="false"/>, <see cref="MultisampleCount.None"/>,
+///     <see cref="BindlessTier.None"/> or 0, even if the GPU supports it.
+///   </para>
+///   <para>
+///     On Direct3D, the fields that need a shader model are also limited to what effects compiled for
+///     the effect profile can use. The device can run at a higher level than that profile.
+///   </para>
+/// </remarks>
+public partial struct GraphicsDeviceFeatures
+{
+    private readonly FeaturesPerFormat[] mapFeaturesPerFormat;
+
+    /// <summary>
+    ///   The requested profile when the <see cref="GraphicsDevice"/> was created.
+    /// </summary>
+    /// <seealso cref="GraphicsProfile"/>
+    public readonly GraphicsProfile RequestedProfile;
+
+    /// <summary>
+    ///   The current profile of the current <see cref="GraphicsDevice"/>, which determines its supported features.
+    /// </summary>
+    /// <remarks>
+    ///   This may differ from <see cref="RequestedProfile"/> if the <see cref="GraphicsDevice"/> could not be created
+    ///   with that requested profile. This one represents the closest supported profile.
+    ///   <para>
+    ///     Vulkan has no feature levels. On Vulkan this is the requested profile, and the other fields come from the
+    ///     features of the Vulkan device.
+    ///   </para>
+    /// </remarks>
+    /// <seealso cref="GraphicsProfile"/>
+    public readonly GraphicsProfile CurrentProfile;
+
+
+    /// <summary>
+    ///   The maximum number of miplevels a Texture can have.
+    /// </summary>
+    /// <seealso cref="Texture"/>
+    public readonly int MaximumMipLevels;
+
+    /// <summary>
+    ///   The maximum size of a resource, in megabytes.
+    /// </summary>
+    /// <seealso cref="GraphicsResource"/>
+    public readonly int ResourceSizeInMegabytes;
+
+    /// <summary>
+    ///   The maximum number of slices/array elements for a one-dimensional (1D) Texture Array.
+    /// </summary>
+    /// <seealso cref="Texture"/>
+    public readonly int MaximumTexture1DArraySize;
+
+    /// <summary>
+    ///   The maximum number of slices/array elements for a two-dimensional (2D) Texture Array.
+    /// </summary>
+    /// <seealso cref="Texture"/>
+    public readonly int MaximumTexture2DArraySize;
+
+    /// <summary>
+    ///   The maximum size in texels for a one-dimensional (1D) Texture.
+    /// </summary>
+    /// <seealso cref="Texture"/>
+    public readonly int MaximumTexture1DSize;
+
+    /// <summary>
+    ///   The maximum size (width or height) in texels for a two-dimensional (2D) Texture.
+    /// </summary>
+    /// <seealso cref="Texture"/>
+    public readonly int MaximumTexture2DSize;
+
+    /// <summary>
+    ///   The maximum size (width, height, or depth) in texels for a three-dimensional (3D) Texture.
+    /// </summary>
+    /// <seealso cref="Texture"/>
+    public readonly int MaximumTexture3DSize;
+
+    /// <summary>
+    ///   The maximum size (width or height) in texels for a Texture Cube.
+    /// </summary>
+    /// <seealso cref="Texture"/>
+    public readonly int MaximumTextureCubeSize;
+
+
+    /// <summary>
+    ///   A value indicating if the <see cref="GraphicsDevice"/> supports Compute Shaders, unordered access on Structured Buffers,
+    ///   and Raw Structured Buffers.
+    /// </summary>
+    /// <seealso cref="Buffer.Structured"/>
+    /// <seealso cref="Buffer.Raw"/>
+    public readonly bool HasComputeShaders;
+
+    /// <summary>
+    ///   A value indicating if the <see cref="GraphicsDevice"/> supports double precision operations in shaders.
+    /// </summary>
+    public readonly bool HasDoublePrecision;
+
+    /// <summary>
+    ///   A value indicating if the <see cref="GraphicsDevice"/> supports concurrent Resources in multi-threading scenarios.
+    /// </summary>
+    public readonly bool HasMultiThreadingConcurrentResources;
+
+    /// <summary>
+    ///   A value indicating if the <see cref="GraphicsDevice"/> supports Command Lists in multi-threading scenarios.
+    /// </summary>
+    /// <seealso cref="CommandList"/>
+    public readonly bool HasDriverCommandLists;
+
+    /// <summary>
+    ///   A value indicating if the <see cref="GraphicsDevice"/> supports sRGB Textures and Render Targets.
+    /// </summary>
+    /// <seealso cref="Texture"/>
+    public readonly bool HasSRgb;
+
+    /// <summary>
+    ///   A value indicating if the Depth Buffer can also be used as a Shader Resource View and bound for shader passes.
+    /// </summary>
+    /// <seealso cref="Texture"/>
+    public readonly bool HasDepthAsSRV;
+
+    /// <summary>
+    ///   A value indicating if the Depth Buffer can directly be used as a read-only Render Target.
+    /// </summary>
+    /// <seealso cref="Texture"/>
+    public readonly bool HasDepthAsReadOnlyRT;
+
+    /// <summary>
+    ///   A value indicating if a multi-sampled Depth Buffer can directly be used as a Shader Resource View.
+    /// </summary>
+    /// <seealso cref="Texture"/>
+    public readonly bool HasMultiSampleDepthAsSRV;
+
+    /// <summary>
+    ///   A value indicating if the graphics API supports resource renaming
+    ///   (with either <see cref="MapMode.WriteDiscard"/> or <see cref="CommandList.UpdateSubResource(GraphicsResource, int, DataBox, ResourceRegion)">CommandList.UpdateSubResource</see> with full size).
+    /// </summary>
+    public readonly bool HasResourceRenaming;
+
+    /// <summary>
+    ///   A value indicating if the <see cref="GraphicsDevice"/> supports index buffers of 32-bit indices.
+    /// </summary>
+    /// <seealso cref="Buffer.Index"/>
+    public readonly bool HasIndex32Bits;
+
+    /// <summary>
+    ///   A value indicating if the <see cref="GraphicsDevice"/> can run geometry shaders.
+    /// </summary>
+    public readonly bool HasGeometryShaders;
+
+    /// <summary>
+    ///   A value indicating if pixel shaders can write to unordered access views and use atomic operations on them.
+    /// </summary>
+    public readonly bool HasPixelShaderUnorderedAccess;
+
+    /// <summary>
+    ///   The level of bindless access (shaders index a large array of textures) that Stride can use on this device.
+    /// </summary>
+    /// <remarks>
+    ///   <see cref="BindlessTier.None"/> when the graphics backend does not implement bindless access, even if the GPU
+    ///   supports it. The device log shows the GPU level next to this one.
+    /// </remarks>
+    public readonly BindlessTier BindlessTier;
+
+    /// <summary>
+    ///   The maximum number of sampled textures in one bindless array, for the shader stage with the lowest limit.
+    /// </summary>
+    /// <remarks>
+    ///   0 when <see cref="BindlessTier"/> is <see cref="BindlessTier.None"/>.
+    /// </remarks>
+    public readonly int MaxBindlessSampledTextureCount;
+
+    /// <summary>
+    ///   What the GPU supports for bindless access, whether or not the backend uses it.
+    /// </summary>
+    internal readonly BindlessSupport GpuBindless;
+
+    /// <summary>
+    ///   Limits the features that need a shader model to what effects compiled for <paramref name="effectProfile"/> can use.
+    /// </summary>
+    internal readonly GraphicsDeviceFeatures LimitedTo(GraphicsProfile effectProfile) => new(this, effectProfile);
+
+    private GraphicsDeviceFeatures(in GraphicsDeviceFeatures deviceFeatures, GraphicsProfile effectProfile)
+    {
+        this = deviceFeatures;
+
+#if STRIDE_GRAPHICS_API_DIRECT3D
+        // Direct3D compiles effects for the shader model of the effect profile
+        HasComputeShaders &= effectProfile >= GraphicsProfile.Level_10_0;
+        HasGeometryShaders &= effectProfile >= GraphicsProfile.Level_10_0;
+        HasDoublePrecision &= effectProfile >= GraphicsProfile.Level_11_0;
+        HasPixelShaderUnorderedAccess &= effectProfile >= GraphicsProfile.Level_11_0;
+        HasMultiSampleDepthAsSRV &= effectProfile >= GraphicsProfile.Level_11_0;
+#endif
+    }
+
+    /// <summary>
+    ///   Queries the features the <see cref="GraphicsDevice"/> supports for the specified <see cref="PixelFormat"/>.
+    /// </summary>
+    /// <param name="pixelFormat">The pixel format.</param>
+    /// <returns>
+    ///   A <see cref="FeaturesPerFormat"/> structure indicating the features supported for <paramref name="pixelFormat"/>.
+    /// </returns>
+    public readonly FeaturesPerFormat this[PixelFormat pixelFormat] => mapFeaturesPerFormat[(int) pixelFormat];
+
+    /// <summary>
+    ///   Contains information about the features a <see cref="GraphicsDevice"/> supports for a particular <see cref="PixelFormat"/>.
+    /// </summary>
+    public readonly struct FeaturesPerFormat
+    {
+        internal FeaturesPerFormat(PixelFormat format, MultisampleCount maximumMultisampleCount, ComputeShaderFormatSupport computeShaderFormatSupport, FormatSupport formatSupport)
+        {
+            Format = format;
+            MultisampleCountMax = maximumMultisampleCount;
+            ComputeShaderFormatSupport = computeShaderFormatSupport;
+            FormatSupport = formatSupport;
+        }
+
+        /// <summary>
+        ///   The pixel format.
+        /// </summary>
+        public readonly PixelFormat Format;
+
+        /// <summary>
+        ///   The maximum sample count when multisampling for a particular <see cref="Format"/>.
+        /// </summary>
+        /// <remarks>
+        ///   <see cref="MultisampleCount.None"/> when the graphics backend does not implement multisampling, even if
+        ///   the GPU supports it for this format.
+        /// </remarks>
+        public readonly MultisampleCount MultisampleCountMax;
+
+        /// <summary>
+        ///   The unordered resource support options for a Compute Shader resource using the <see cref="Format"/>.
+        /// </summary>
+        public readonly ComputeShaderFormatSupport ComputeShaderFormatSupport;
+
+        /// <summary>
+        ///   The support flags for a particular <see cref="Format"/>.
+        /// </summary>
+        public readonly FormatSupport FormatSupport;
+
+
+        /// <inheritdoc/>
+        public override readonly string ToString()
+        {
+            return $"Format: {Format}, MultisampleCountMax: {MultisampleCountMax}, ComputeShaderFormatSupport: {ComputeShaderFormatSupport}, FormatSupport: {FormatSupport}";
+        }
+    }
+
+    /// <inheritdoc/>
+    /// <remarks>
+    ///   Every flag that makes a renderer quietly do something else is named here. Leaving one out means
+    ///   the degrade it causes cannot be diagnosed from the log.
+    /// </remarks>
+    public override readonly string ToString()
+    {
+        return $"Requested: {RequestedProfile}, Current: {CurrentProfile}, " +
+               $"HasComputeShaders: {HasComputeShaders}, HasDoublePrecision: {HasDoublePrecision}, " +
+               $"HasMultiThreadingConcurrentResources: {HasMultiThreadingConcurrentResources}, " +
+               $"HasDriverCommandLists: {HasDriverCommandLists}, HasSRgb: {HasSRgb}, " +
+               $"HasDepthAsSRV: {HasDepthAsSRV}, HasDepthAsReadOnlyRT: {HasDepthAsReadOnlyRT}, " +
+               $"HasMultiSampleDepthAsSRV: {HasMultiSampleDepthAsSRV}, HasResourceRenaming: {HasResourceRenaming}, " +
+               $"HasIndex32Bits: {HasIndex32Bits}, HasGeometryShaders: {HasGeometryShaders}, " +
+               $"HasPixelShaderUnorderedAccess: {HasPixelShaderUnorderedAccess}, " +
+               $"BindlessTier: {BindlessTier} (GPU: {GpuBindless.Tier}{(GpuBindless.Detail is null ? "" : $", {GpuBindless.Detail}")}), " +
+               $"MaxBindlessSampledTextureCount: {MaxBindlessSampledTextureCount} (GPU: {GpuBindless.MaxSampledTextureCount})";
+    }
+}

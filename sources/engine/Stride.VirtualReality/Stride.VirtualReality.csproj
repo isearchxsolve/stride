@@ -1,0 +1,51 @@
+<Project>
+  <Import Project="$([MSBuild]::GetDirectoryNameOfFileAbove($(MSBuildProjectDirectory), 'Directory.Build.props'))/sdk/Stride.Build.Sdk/Sdk/Sdk.props" />
+  <PropertyGroup>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <TargetFrameworks>$(StrideRuntimeTargetFrameworks)</TargetFrameworks>
+    <StrideGraphicsApiDependent>true</StrideGraphicsApiDependent>
+    <StrideNativeOutputName>libstridevr</StrideNativeOutputName>
+    <StrideNativeWindowsArm64Enabled>false</StrideNativeWindowsArm64Enabled>
+    <StrideAssemblyProcessor>true</StrideAssemblyProcessor>
+    <StrideAssemblyProcessorOptions>--serialization --parameter-key</StrideAssemblyProcessorOptions>
+    <StrideCodeAnalysis>true</StrideCodeAnalysis>
+  </PropertyGroup>
+  <Choose>
+    <When Condition=" '$(StrideGraphicsApi)' == 'Direct3D11' Or '$(StrideGraphicsApi)' == 'Direct3D12' ">
+      <ItemGroup>
+        <StrideNativeLib Include="..\..\..\deps\OpenVR\$(StridePlatformDeps)\**\openvr_api.*">
+          <Link>runtimes\%(RecursiveDir)native\%(Filename)%(Extension)</Link>
+          <RelativePath>runtimes\%(RecursiveDir)native\%(Filename)%(Extension)</RelativePath>
+          <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        </StrideNativeLib>
+        <StrideNativeLib Include="..\..\..\deps\OpenXR\openxr_loader.dll">
+          <Link>runtimes\win-x64\native\%(RecursiveDir)%(Filename)%(Extension)</Link>
+          <RelativePath>runtimes\win-x64\native\%(RecursiveDir)%(Filename)%(Extension)</RelativePath>
+          <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        </StrideNativeLib>
+      </ItemGroup>
+    </When>
+  </Choose>
+  <ItemGroup>
+    <Compile Include="..\..\shared\SharedAssemblyInfo.cs">
+      <Link>Properties\SharedAssemblyInfo.cs</Link>
+    </Compile>
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Stride.Games\Stride.Games.csproj" />
+    <ProjectReference Include="..\Stride.Graphics\Stride.Graphics.csproj" />
+    <ProjectReference Include="..\Stride.Input\Stride.Input.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="Stride.Native.Libs.targets">
+      <SubType>Designer</SubType>
+    </None>
+    <None Include="OculusOVR\OculusOVR.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Silk.NET.OpenXR" PrivateAssets="compile" />
+    <PackageReference Include="Silk.NET.OpenXR.Extensions.FB" PrivateAssets="compile" />
+    <PackageReference Include="Silk.NET.Direct3D11" Condition="'$(TargetFramework)' == '$(StrideFramework)' Or '$(TargetFramework)' == '$(StrideFrameworkUWP)'" PrivateAssets="compile" />
+  </ItemGroup>
+  <Import Project="$(StrideRoot)sources/sdk/Stride.Build.Sdk/Sdk/Sdk.targets" />
+</Project>

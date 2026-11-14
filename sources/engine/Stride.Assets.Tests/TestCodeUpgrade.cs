@@ -1,0 +1,1119 @@
+// Copyright (c) .NET Foundation and Contributors (https://dotnetfoundation.org/ & https://stride3d.net)
+// Distributed under the MIT license. See the LICENSE.md file in the project root for more information.
+
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.Text;
+using Stride.Assets;
+using Xunit;
+using static Stride.Assets.CodeUpgrades;
+
+namespace Stride.Assets.Tests;
+
+/// <summary>
+/// In-memory tests for the symbol-driven code-upgrade engine. These validate semantic precision and
+/// the rewrite shape without a real Stride package: a stub type stands in for the migrated member, and
+/// an unrelated same-named member proves the rewrite never fires on the wrong symbol.
+/// </summary>
+public class TestCodeUpgrade
+{
+    private static IEnumerable<MetadataReference> FrameworkReferences()
+    {
+        var trustedAssemblies = AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES") as string ?? string.Empty;
+        foreach (var path in trustedAssemblies.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (path.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
+                yield return MetadataReference.CreateFromFile(path);
+        }
+    }
+
+    private static async Task<string> ApplyAsync(string source, params CodeUpgrade[] upgrades)
+    {
+        using var workspace = new AdhocWorkspace();
+        var projectId = ProjectId.CreateNewId();
+        var projectInfo = ProjectInfo.Create(projectId, VersionStamp.Create(), "TestProject", "TestProject", LanguageNames.CSharp)
+            .WithMetadataReferences(FrameworkReferences())
+            .WithCompilationOptions(new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary))
+            // C# 14 extension members are the real #3037 shape; parse at the latest language version.
+            .WithParseOptions(new CSharpParseOptions(LanguageVersion.Preview));
+        workspace.AddProject(projectInfo);
+
+        var documentId = DocumentId.CreateNewId(projectId);
+        // Give the document a real path: the engine only migrates on-disk user source (it writes back by path).
+        var solution = workspace.CurrentSolution.AddDocument(documentId, "Test.cs", SourceText.From(source), filePath: Path.Combine(Path.GetTempPath(), "Test.cs"));
+
+        IReadOnlyList<ProjectId> targets = [projectId];
+        foreach (var upgrade in upgrades)
+            solution = await upgrade(solution, targets, CancellationToken.None);
+
+        var document = solution.GetDocument(documentId);
+        var text = await document.GetTextAsync();
+        return text.ToString();
+    }
+
+    private static void AssertCompiles(string source)
+    {
+        var syntaxTree = CSharpSyntaxTree.ParseText(source, new CSharpParseOptions(LanguageVersion.Preview));
+        var compilation = CSharpCompilation.Create("Check", [syntaxTree], FrameworkReferences(), new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+        Assert.Empty(compilation.GetDiagnostics().Where(x => x.Severity == DiagnosticSeverity.Error));
+    }
+
+    [Fact]
+    public async Task PropertyToMethodWrapsOnlyTheMatchingSymbol()
+    {
+        var source = """
+            namespace TestNs
+            {
+                class Target
+                {
+                    public bool IsSRgb => true;
+                }
+                class Other
+                {
+                    public bool IsSRgb => false;
+                }
+                class Usage
+                {
+                    bool A(Target t) => t.IsSRgb;
+                    bool B(Other o) => o.IsSRgb;
+                }
+            }
+            """;
+
+        var result = await ApplyAsync(source, Rewrite(PropertyToMethod("TestNs.Target", "IsSRgb")));
+
+        // The matching access is wrapped in an invocation; the unrelated same-named access is untouched.
+        Assert.Contains("t.IsSRgb()", result);
+        Assert.Contains("o.IsSRgb;", result);
+        Assert.DoesNotContain("o.IsSRgb()", result);
+        Assert.DoesNotContain("t.IsSRgb;", result);
+    }
+
+    [Fact]
+    public async Task MemberToExtensionQualifiesBareUsesAndImportsTheNamespace()
+    {
+        // A bare use needs `this.` (simple-name lookup skips extension members); a same-named member elsewhere is untouched
+        var source = """
+            namespace TestNs
+            {
+                class AudioSystem { public object Engine; }
+                class Game
+                {
+                    public AudioSystem Audio => null;
+                }
+                class Other
+                {
+                    public AudioSystem Audio => null;
+                }
+                class Script : Game
+                {
+                    object A() => Audio.Engine;
+                    object B() => this.Audio.Engine;
+                    object C(Game g) => g.Audio;
+                    object D(Game g) => g?.Audio;
+                    object E() => base.Audio;
+                    object F(Other o) => o.Audio;
+                }
+            }
+            """;
+
+        var result = await ApplyAsync(source, Rewrite(MemberToExtension("TestNs.Game", "Audio", "Extensions.Audio")));
+
+        Assert.StartsWith("using Extensions.Audio;", result);
+        Assert.Equal(1, result.Split("using Extensions.Audio;").Length - 1);
+        Assert.Contains("object A() => this.Audio.Engine;", result);
+        Assert.Contains("object B() => this.Audio.Engine;", result);
+        Assert.Contains("object C(Game g) => g.Audio;", result);
+        Assert.Contains("object D(Game g) => g?.Audio;", result);
+        Assert.Contains("object E() => this.Audio;", result);
+        Assert.Contains("object F(Other o) => o.Audio;", result);
+    }
+
+    [Fact]
+    public async Task MemberToExtensionLeavesNamesThatAreNotExpressions()
+    {
+        // A cref and a property pattern name the member without an expression to qualify: left alone, the rest migrates
+        var source = """
+            namespace TestNs
+            {
+                class AudioSystem { public object Engine; }
+                class Game
+                {
+                    public AudioSystem Audio => null;
+                }
+                /// <summary>Plays through <see cref="Game.Audio"/>.</summary>
+                class Script : Game
+                {
+                    bool A(Game g) => g is { Audio: not null };
+                    object B() => Audio;
+                }
+            }
+            """;
+
+        var result = await ApplyAsync(source, Rewrite(MemberToExtension("TestNs.Game", "Audio", "Extensions.Audio")));
+
+        Assert.Contains("<see cref=\"Game.Audio\"/>", result);
+        Assert.Contains("bool A(Game g) => g is { Audio: not null };", result);
+        Assert.Contains("object B() => this.Audio;", result);
+    }
+
+    [Fact]
+    public async Task MemberToExtensionRoutesUsesThroughAnotherMember()
+    {
+        // Every use of the old member, bare or qualified, goes through the Game property
+        var source = """
+            namespace TestNs
+            {
+                class AudioSystem { public object Engine; }
+                class Game { }
+                class ScriptComponent
+                {
+                    public Game Game => null;
+                    public AudioSystem Audio => null;
+                }
+                class Script : ScriptComponent
+                {
+                    object A() => Audio.Engine;
+                    object B() => this.Audio.Engine;
+                    object C(ScriptComponent s) => s.Audio;
+                    object D(ScriptComponent s) => s?.Audio.Engine;
+                    object E() => base.Audio;
+                }
+            }
+            """;
+
+        var result = await ApplyAsync(source, Rewrite(MemberToExtension("TestNs.ScriptComponent", "Audio", "Extensions.Audio", throughMember: "Game")));
+
+        Assert.StartsWith("using Extensions.Audio;", result);
+        Assert.Contains("object A() => Game.Audio.Engine;", result);
+        Assert.Contains("object B() => this.Game.Audio.Engine;", result);
+        Assert.Contains("object C(ScriptComponent s) => s.Game.Audio;", result);
+        Assert.Contains("object D(ScriptComponent s) => s?.Game.Audio.Engine;", result);
+        Assert.Contains("object E() => base.Game.Audio;", result);
+    }
+
+    [Fact]
+    public async Task PropertyToMethodMigratesCSharp14ExtensionProperty()
+    {
+        // The actual #3037 case: an extension *property* (C# 14 extension block) turned into a method.
+        // This is what PixelFormatExtensions.IsSRgb is — validates the member resolver walks the
+        // nested extension grouping type and FindReferences binds the instance-sugar usage.
+        var source = """
+            namespace TestNs
+            {
+                enum MyFormat { A, B }
+                static class MyFormatExtensions
+                {
+                    extension(MyFormat format)
+                    {
+                        public bool IsSRgb => format == MyFormat.A;
+                    }
+                }
+                class Usage
+                {
+                    bool A(MyFormat f) => f.IsSRgb;
+                }
+            }
+            """;
+
+        var result = await ApplyAsync(source, Rewrite(PropertyToMethod("TestNs.MyFormatExtensions", "IsSRgb")));
+
+        Assert.Contains("f.IsSRgb()", result);
+        Assert.DoesNotContain("=> f.IsSRgb;", result);
+    }
+
+    [Fact]
+    public async Task PropertyToMethodHandlesConditionalAccess()
+    {
+        var source = """
+            namespace TestNs
+            {
+                class Target
+                {
+                    public bool IsSRgb => true;
+                }
+                class Usage
+                {
+                    bool? A(Target t) => t?.IsSRgb;
+                }
+            }
+            """;
+
+        var result = await ApplyAsync(source, Rewrite(PropertyToMethod("TestNs.Target", "IsSRgb")));
+
+        Assert.Contains("t?.IsSRgb()", result);
+    }
+
+    [Fact]
+    public async Task PropertyToMethodIsIdempotent()
+    {
+        // A property already migrated to a method call must not be double-wrapped on a re-run.
+        var source = """
+            namespace TestNs
+            {
+                class Target
+                {
+                    public bool IsSRgb() => true;
+                }
+                class Usage
+                {
+                    bool A(Target t) => t.IsSRgb();
+                }
+            }
+            """;
+
+        var result = await ApplyAsync(source, Rewrite(PropertyToMethod("TestNs.Target", "IsSRgb")));
+
+        Assert.Contains("t.IsSRgb()", result);
+        Assert.DoesNotContain("t.IsSRgb()()", result);
+    }
+
+    [Fact]
+    public async Task MethodToPropertyUnwrapsOnlyTheMatchingSymbol()
+    {
+        var source = """
+            namespace TestNs
+            {
+                class Target
+                {
+                    public bool IsSRgb() => true;
+                }
+                class Other
+                {
+                    public bool IsSRgb() => false;
+                }
+                class Usage
+                {
+                    bool A(Target t) => t.IsSRgb();
+                    bool B(Other o) => o.IsSRgb();
+                }
+            }
+            """;
+
+        var result = await ApplyAsync(source, Rewrite(MethodToProperty("TestNs.Target", "IsSRgb")));
+
+        // The matching call loses its parentheses; the unrelated same-named call is untouched.
+        Assert.Contains("=> t.IsSRgb;", result);
+        Assert.Contains("o.IsSRgb();", result);
+        Assert.DoesNotContain("t.IsSRgb()", result);
+        Assert.DoesNotContain("o.IsSRgb;", result);
+    }
+
+    [Fact]
+    public async Task MethodToPropertyMigratesExtensionMethod()
+    {
+        // The actual #3037 case: a classic extension *method* (the 4.1 form) became a property — so
+        // f.IsSRgb() -> f.IsSRgb. Validates the member resolver finds the static extension method and
+        // FindReferences binds the instance-sugar call.
+        var source = """
+            namespace TestNs
+            {
+                enum MyFormat { A, B }
+                static class MyFormatExtensions
+                {
+                    public static bool IsSRgb(this MyFormat format) => format == MyFormat.A;
+                }
+                class Usage
+                {
+                    bool A(MyFormat f) => f.IsSRgb();
+                }
+            }
+            """;
+
+        var result = await ApplyAsync(source, Rewrite(MethodToProperty("TestNs.MyFormatExtensions", "IsSRgb")));
+
+        Assert.Contains("=> f.IsSRgb;", result);
+        Assert.DoesNotContain("f.IsSRgb()", result);
+    }
+
+    [Fact]
+    public async Task MethodToPropertyHandlesConditionalAccess()
+    {
+        var source = """
+            namespace TestNs
+            {
+                class Target
+                {
+                    public bool IsSRgb() => true;
+                }
+                class Usage
+                {
+                    bool? A(Target t) => t?.IsSRgb();
+                }
+            }
+            """;
+
+        var result = await ApplyAsync(source, Rewrite(MethodToProperty("TestNs.Target", "IsSRgb")));
+
+        Assert.Contains("t?.IsSRgb;", result);
+        Assert.DoesNotContain("t?.IsSRgb()", result);
+    }
+
+    [Fact]
+    public async Task ParameterRenameRenamesNamedArgumentOnConstructor()
+    {
+        // The actual #3249 case: IndexBufferBinding's constructor parameter `count` became `indexCount`,
+        // breaking call sites that used a named argument.
+        var source = """
+            namespace TestNs
+            {
+                class Target
+                {
+                    public Target(int count, int offset = 0) { }
+                }
+                class Other
+                {
+                    public Other(int count) { }
+                }
+                class Usage
+                {
+                    Target A() => new Target(count: 5);
+                    Target B() => new(count: 5);
+                    Target C(int count) => new Target(count);
+                    Other D() => new Other(count: 5);
+                }
+            }
+            """;
+
+        var result = await ApplyAsync(source, Rewrite(ParameterRename("TestNs.Target", ".ctor", "count", "indexCount")));
+
+        // Named arguments on the matching constructor are renamed (explicit and implicit creation)...
+        Assert.Contains("new Target(indexCount: 5)", result);
+        Assert.Contains("new(indexCount: 5)", result);
+        // ...while positional arguments and the unrelated same-shaped constructor are untouched.
+        Assert.Contains("new Target(count);", result);
+        Assert.Contains("new Other(count: 5)", result);
+    }
+
+    [Fact]
+    public async Task ParameterRenameRenamesNamedArgumentOnMethod()
+    {
+        var source = """
+            namespace TestNs
+            {
+                class Target
+                {
+                    public void Fill(int count) { }
+                    public void Fill(string other) { }
+                }
+                class Usage
+                {
+                    void A(Target t) => t.Fill(count: 3);
+                    void B(Target t) => t.Fill(other: "x");
+                    void C(Target t) => t?.Fill(count: 3);
+                }
+            }
+            """;
+
+        var result = await ApplyAsync(source, Rewrite(ParameterRename("TestNs.Target", "Fill", "count", "newCount")));
+
+        Assert.Contains("t.Fill(newCount: 3)", result);
+        Assert.Contains("t?.Fill(newCount: 3)", result);
+        // The overload without the renamed parameter is untouched.
+        Assert.Contains("t.Fill(other: \"x\")", result);
+    }
+
+    [Fact]
+    public async Task RemoveUnusedUsingsRemovesOnlyListedAndUnusedDirectives()
+    {
+        // Namespaces are declared so they resolve, standing in for the from-version closure (where e.g.
+        // SharpDX still exists). Only the unused directive matching the dropped list may be removed.
+        var source = """
+            using DroppedNs;
+            using DroppedNs.Sub;
+            using System.Text;
+
+            namespace DroppedNs { public class A { } }
+            namespace DroppedNs.Sub { public class B { } }
+            namespace TestNs
+            {
+                class Usage
+                {
+                    A a; // keeps `using DroppedNs;` in use
+                }
+            }
+            """;
+
+        var result = await ApplyAsync(source, RemoveUnusedUsings("DroppedNs"));
+
+        // The unused directive of the dropped namespace family is removed (sub-namespaces included)...
+        Assert.DoesNotContain("using DroppedNs.Sub;", result);
+        // ...the used one stays (that code needs manual porting; removing the using would only obscure it),
+        Assert.Contains("using DroppedNs;", result);
+        // ...and unused directives outside the dropped list are none of our business.
+        Assert.Contains("using System.Text;", result);
+    }
+
+    [Fact]
+    public async Task MethodToPropertyLeavesArgumentCallsAlone()
+    {
+        // A call that passes arguments can't become a property access; it must be left untouched.
+        var source = """
+            namespace TestNs
+            {
+                static class MyExtensions
+                {
+                    public static bool IsSRgb(this int value) => value > 0;
+                    public static bool IsSRgb(this int value, int extra) => value > extra;
+                }
+                class Usage
+                {
+                    bool A(int v) => v.IsSRgb(2);
+                }
+            }
+            """;
+
+        var result = await ApplyAsync(source, Rewrite(MethodToProperty("TestNs.MyExtensions", "IsSRgb")));
+
+        Assert.Contains("v.IsSRgb(2)", result);
+    }
+
+    // The #1715 shape: memory helpers left Utilities for MemoryUtilities (same namespace), some renamed.
+    private const string MovedMembersSource = """
+        namespace TestNs
+        {
+            static class Old
+            {
+                public static nint AllocateMemory(int sizeInBytes, int align = 16) => 0;
+                public static void FreeMemory(nint buffer) { }
+                public static void Swap<T>(ref T left, ref T right) { }
+                public static void Dispose(object o) { }
+            }
+            static class Other
+            {
+                public static void FreeMemory(nint buffer) { }
+            }
+        }
+        """;
+
+    private static readonly CodeUpgrade MoveUpgrade = Rewrite(
+        StaticMemberMove("TestNs.Old", "AllocateMemory", "TestNs.New", "Allocate"),
+        StaticMemberMove("TestNs.Old", "FreeMemory", "TestNs.New", "Free"),
+        StaticMemberMove("TestNs.Old", "Swap", "TestNs.New"),
+        ParameterRename("TestNs.Old", "AllocateMemory", "align", "alignment"));
+
+    [Fact]
+    public async Task StaticMemberMoveRetargetsOnlyTheMatchingSymbol()
+    {
+        var source = MovedMembersSource + """
+
+            namespace TestNs
+            {
+                class Usage
+                {
+                    void A(nint p) => Old.FreeMemory(p);
+                    void B(nint p) => Other.FreeMemory(p);
+                    void C(object o) => Old.Dispose(o);
+                    void D(nint p) => TestNs.Old.FreeMemory(p);
+                    void E(nint p) => global::TestNs.Old.FreeMemory(p);
+                    System.Action<nint> F() => Old.FreeMemory;
+                    string G() => nameof(Old.FreeMemory);
+                    void H(ref int a, ref int b) => Old.Swap<int>(ref a, ref b);
+                }
+            }
+            """;
+
+        var result = await ApplyAsync(source, MoveUpgrade);
+
+        Assert.Contains("=> New.Free(p);", result);
+        // The qualified receiver keeps its shape.
+        Assert.Contains("=> TestNs.New.Free(p);", result);
+        Assert.Contains("=> global::TestNs.New.Free(p);", result);
+        // Method groups, nameof and generic names are references too.
+        Assert.Contains("=> New.Free;", result);
+        Assert.Contains("nameof(New.Free)", result);
+        Assert.Contains("New.Swap<int>(ref a, ref b)", result);
+        // The unrelated same-named member and the members that stayed are untouched.
+        Assert.Contains("Other.FreeMemory(p)", result);
+        Assert.Contains("Old.Dispose(o)", result);
+    }
+
+    [Fact]
+    public async Task StaticMemberMoveComposesWithParameterRename()
+    {
+        // Both rewrites hit the same reference (the method name) but edit disjoint nodes.
+        var source = MovedMembersSource + """
+
+            namespace TestNs
+            {
+                class Usage
+                {
+                    nint A() => Old.AllocateMemory(64, align: 32);
+                }
+            }
+            """;
+
+        var result = await ApplyAsync(source, MoveUpgrade);
+
+        Assert.Contains("New.Allocate(64, alignment: 32)", result);
+    }
+
+    [Fact]
+    public async Task StaticMemberMoveQualifiesAliasAndUsingStaticReferences()
+    {
+        // Neither form names the old type at the call site, so the new type can't be assumed in scope.
+        var source = """
+            using static TestNs.Old;
+            using Alias = TestNs.Old;
+
+            """ + MovedMembersSource + """
+
+            namespace UserNs
+            {
+                class Usage
+                {
+                    void A(nint p) => FreeMemory(p);
+                    void B(nint p) => Alias.FreeMemory(p);
+                }
+            }
+            """;
+
+        var result = await ApplyAsync(source, MoveUpgrade);
+
+        Assert.Contains("void A(nint p) => TestNs.New.Free(p);", result);
+        Assert.Contains("void B(nint p) => TestNs.New.Free(p);", result);
+    }
+
+    [Fact]
+    public async Task FluentCallRemoveKeepsTheReceiver()
+    {
+        // The 4.4 shape: Buffer.RecreateWith returned its receiver and went away with the device reset recovery.
+        var source = """
+            namespace TestNs
+            {
+                class Target
+                {
+                    public static Target New() => new();
+                    public static Target Make() => new();
+                    public Target RecreateWith(int[] data) => this;
+                }
+                class Other
+                {
+                    public Other RecreateWith(int[] data) => this;
+                }
+                class Usage
+                {
+                    Target A(int[] d) => Target.New().RecreateWith(d);
+                    Target B(Target t, int[] d) => t?.RecreateWith(d);
+                    Other C(Other o, int[] d) => o.RecreateWith(d);
+                    void D(Target t, int[] d)
+                    {
+                        t.RecreateWith(d);
+                        t?.RecreateWith(d);
+                        Target.Make().RecreateWith(d);
+                        if (t != null) t.RecreateWith(d);
+                        for (t.RecreateWith(d); d.Length > 0; t.RecreateWith(d)) { }
+                    }
+                    void E(Target t, int[] d) => t.RecreateWith(d);
+                    Target F(Target t, int[] d) => t.RecreateWith(d);
+                    System.Action G(Target t, int[] d) => () => t.RecreateWith(d);
+                    System.Func<Target> H(Target t, int[] d) => () => t.RecreateWith(d);
+                    async System.Threading.Tasks.Task I(Target t, int[] d) => t.RecreateWith(d);
+                }
+            }
+            """;
+
+        var result = await ApplyAsync(source, Rewrite(FluentCallRemove("TestNs.Target", "RecreateWith")));
+
+        Assert.Contains("=> Target.New();", result);
+        Assert.Contains("=> t;", result);
+        // As a statement, a bare receiver goes with the call, and a call receiver stays.
+        Assert.DoesNotContain("t.RecreateWith", result);
+        Assert.DoesNotContain("t?.RecreateWith", result);
+        Assert.Contains("Target.Make();", result);
+        Assert.Contains("if (t != null)", result);
+        // Where the value is used, the receiver stays; where it is discarded, the call goes.
+        Assert.Contains("Target F(Target t, int[] d) => t;", result);
+        Assert.Contains("System.Func<Target> H(Target t, int[] d) => () => t;", result);
+        // The unrelated same-named method is untouched.
+        Assert.Contains("o.RecreateWith(d)", result);
+        AssertCompiles(result);
+    }
+
+    [Fact]
+    public async Task AssignmentRemoveDropsAssignmentsAndSubscriptions()
+    {
+        // The 4.4 shape: GraphicsResourceBase.Reload and the DeviceReset events are gone; user code only ever
+        // assigned or subscribed to them.
+        var source = """
+            namespace TestNs
+            {
+                class Target
+                {
+                    public System.Action Reload;
+                    public event System.EventHandler DeviceReset;
+                }
+                class Other
+                {
+                    public System.Action Reload;
+                }
+                class Usage
+                {
+                    void A(Target t)
+                    {
+                        t.Reload = () => { };
+                        t.DeviceReset += (s, e) => { };
+                        t.DeviceReset -= (s, e) => { };
+                        if (t.Reload != null) t.Reload();
+                        if (t != null) t.DeviceReset += (s, e) => { };
+                        else t.Reload = null;
+                    }
+                    void B(Other o)
+                    {
+                        o.Reload = () => { };
+                    }
+                }
+            }
+            """;
+
+        var result = await ApplyAsync(source, Rewrite(
+            AssignmentRemove("TestNs.Target", "Reload"),
+            AssignmentRemove("TestNs.Target", "DeviceReset")));
+
+        Assert.DoesNotContain("t.Reload = ", result);
+        Assert.DoesNotContain("t.DeviceReset +=", result);
+        Assert.DoesNotContain("t.DeviceReset -=", result);
+        // A read is left for the user to port, and the unrelated same-named member is untouched.
+        Assert.Contains("if (t.Reload != null) t.Reload();", result);
+        Assert.Contains("o.Reload = ", result);
+        // The body of an if or else without braces cannot be removed: it becomes an empty block.
+        Assert.Contains("if (t != null)", result);
+        Assert.Contains("else", result);
+        AssertCompiles(result);
+    }
+
+    // The 4.5 shape: types with hand-written ParameterKey fields get [EffectKeys], which does not exist at the old version.
+    private const string ParameterKeySource = """
+        namespace Stride.Rendering
+        {
+            public abstract class ParameterKey { }
+            public sealed class ValueParameterKey<T> : ParameterKey { }
+            public static class ParameterKeys { public static ValueParameterKey<T> NewValue<T>() => null; }
+        }
+
+        """;
+
+    private const string EffectKeysAttributeSource = """
+
+        namespace Stride.Rendering
+        {
+            [System.AttributeUsage(System.AttributeTargets.Class | System.AttributeTargets.Struct)]
+            public sealed class EffectKeysAttribute : System.Attribute { }
+        }
+        """;
+
+    private static readonly CodeUpgrade EffectKeysUpgrade = AddAttributeToStaticFieldHolders("Stride.Rendering.ParameterKey", "Stride.Rendering.EffectKeysAttribute");
+
+    [Fact]
+    public async Task AddAttributeToStaticFieldHoldersMarksTypesWithStaticKeyFields()
+    {
+        var source = ParameterKeySource + """
+            namespace Game
+            {
+                using Stride.Rendering;
+
+                /// <summary>Keys.</summary>
+                public static class MyKeys
+                {
+                    public static readonly ValueParameterKey<float> Intensity = ParameterKeys.NewValue<float>();
+                }
+
+                [System.Serializable]
+                public struct MyStruct
+                {
+                    private static readonly ValueParameterKey<int> Count = ParameterKeys.NewValue<int>();
+                }
+
+                public class Outer
+                {
+                    public class Nested
+                    {
+                        public static ValueParameterKey<float> Key;
+                    }
+                }
+
+                public partial class Split
+                {
+                    public static ValueParameterKey<float> First;
+                }
+
+                public partial class Split
+                {
+                    public static ValueParameterKey<float> Second;
+                }
+
+                public class NotKeys
+                {
+                    public ValueParameterKey<float> Instance;
+                    public static string Text;
+                }
+
+                [EffectKeys]
+                public class AlreadyMarked
+                {
+                    public static ValueParameterKey<float> Key;
+                }
+            }
+            """;
+
+        var result = await ApplyAsync(source, EffectKeysUpgrade);
+
+        var expected = ParameterKeySource + """
+            namespace Game
+            {
+                using Stride.Rendering;
+
+                /// <summary>Keys.</summary>
+                [EffectKeys]
+                public static class MyKeys
+                {
+                    public static readonly ValueParameterKey<float> Intensity = ParameterKeys.NewValue<float>();
+                }
+
+                [EffectKeys]
+                [System.Serializable]
+                public struct MyStruct
+                {
+                    private static readonly ValueParameterKey<int> Count = ParameterKeys.NewValue<int>();
+                }
+
+                public class Outer
+                {
+                    [EffectKeys]
+                    public class Nested
+                    {
+                        public static ValueParameterKey<float> Key;
+                    }
+                }
+
+                [EffectKeys]
+                public partial class Split
+                {
+                    public static ValueParameterKey<float> First;
+                }
+
+                public partial class Split
+                {
+                    public static ValueParameterKey<float> Second;
+                }
+
+                public class NotKeys
+                {
+                    public ValueParameterKey<float> Instance;
+                    public static string Text;
+                }
+
+                [EffectKeys]
+                public class AlreadyMarked
+                {
+                    public static ValueParameterKey<float> Key;
+                }
+            }
+            """;
+        Assert.Equal(expected.ReplaceLineEndings(), result.ReplaceLineEndings());
+        AssertCompiles(result + EffectKeysAttributeSource);
+    }
+
+    [Fact]
+    public async Task AddAttributeToStaticFieldHoldersQualifiesTheAttributeOutOfScopeAndIsIdempotent()
+    {
+        var source = ParameterKeySource + """
+            namespace Game
+            {
+                public class MyKeys
+                {
+                    public static readonly Stride.Rendering.ValueParameterKey<float> Intensity = Stride.Rendering.ParameterKeys.NewValue<float>();
+                }
+            }
+            """;
+
+        var result = await ApplyAsync(source, EffectKeysUpgrade, EffectKeysUpgrade);
+
+        Assert.Contains("""
+                [Stride.Rendering.EffectKeys]
+                public class MyKeys
+            """.ReplaceLineEndings(), result.ReplaceLineEndings());
+        Assert.Equal(1, result.Split("[Stride.Rendering.EffectKeys]").Length - 1);
+        AssertCompiles(result + EffectKeysAttributeSource);
+    }
+
+    // The Dispatcher before 4.5, with the overloads whose delegates the assembly processor pooled
+    private const string OldDispatcherSource = """
+        using System.Collections.Generic;
+        using Stride.Core.Threading;
+
+        namespace Stride.Core.Threading
+        {
+            public static class Dispatcher
+            {
+                public static void For(int fromInclusive, int toExclusive, System.Action<int> action) { }
+                public static void For<TLocal>(int fromInclusive, int toExclusive, System.Func<TLocal> initializeLocal, System.Action<int, TLocal> action, System.Action<TLocal> finalizeLocal = null) { }
+                public static void ForBatched(int items, System.Action<int, int> executeBatch) { }
+                public static void ForEach<T>(T[] collection, System.Action<T> action) { }
+                public static void ForEach<T>(System.Collections.Generic.List<T> collection, System.Action<T> action) { }
+                public static void ForEach<T, TList>(TList collection, System.Action<T> action) where TList : System.Collections.Generic.IReadOnlyList<T> { }
+                public static void ForEach<TKey, TValue>(System.Collections.Generic.Dictionary<TKey, TValue> collection, System.Action<System.Collections.Generic.KeyValuePair<TKey, TValue>> action) { }
+                public static void ForEach<TItem, TLocal, TList>(TList collection, System.Func<TLocal> initializeLocal, System.Action<TItem, TLocal> action, System.Action<TLocal> finalizeLocal = null) where TList : System.Collections.Generic.IReadOnlyList<TItem> { }
+                public static void ForEach<TKey, TValue, TLocal>(System.Collections.Generic.Dictionary<TKey, TValue> collection, System.Func<TLocal> initializeLocal, System.Action<System.Collections.Generic.KeyValuePair<TKey, TValue>, TLocal> action, System.Action<TLocal> finalizeLocal = null) { }
+            }
+        }
+
+        """;
+
+    // The Dispatcher after: the overloads taking a state
+    private const string NewDispatcherSource = """
+        using System.Collections.Generic;
+        using Stride.Core.Threading;
+
+        namespace Stride.Core.Threading
+        {
+            public static class Dispatcher
+            {
+                public static void For<TState>(int fromInclusive, int toExclusive, TState state, System.Action<TState, int> action) { }
+                public static void ForBatched<TState>(int items, TState state, System.Action<TState, int, int> executeBatch) { }
+                public static void ForEach<T, TState>(System.Collections.Generic.IReadOnlyList<T> collection, TState state, System.Action<TState, T> action) { }
+            }
+        }
+
+        """;
+
+    private static readonly CodeUpgrade DispatcherUpgrade = DispatcherCallbacksToStaticLambdas();
+
+    [Fact]
+    public async Task DispatcherCallbacksMoveCapturesToTheState()
+    {
+        var source = OldDispatcherSource + """
+            namespace Game
+            {
+                public class Processor
+                {
+                    private readonly List<int> items = new();
+                    private int total;
+
+                    private void Process(int value) { }
+
+                    public void Update(int[] hits)
+                    {
+                        Dispatcher.For(0, 10, i => Process(i));
+                        Dispatcher.For(0, 10, i => this.Process(i));
+                        Dispatcher.For(0, 10, i => total += i);
+                        Dispatcher.For(0, 10, i => System.Console.WriteLine(i));
+                        var scale = 2;
+                        Dispatcher.ForEach(items, item => Process(item * scale));
+                        Dispatcher.ForEach<int, List<int>>(items, delegate (int item) { Process(item); });
+                        Dispatcher.ForBatched(hits.Length, (from, toExclusive) =>
+                        {
+                            for (int i = from; i < toExclusive; i++)
+                                hits[i]++;
+                        });
+                        Dispatcher.ForEach(items, Process);
+                    }
+                }
+            }
+            """;
+
+        var result = await ApplyAsync(source, DispatcherUpgrade);
+
+        var expected = OldDispatcherSource + """
+            namespace Game
+            {
+                public class Processor
+                {
+                    private readonly List<int> items = new();
+                    private int total;
+
+                    private void Process(int value) { }
+
+                    public void Update(int[] hits)
+                    {
+                        Dispatcher.For(0, 10, this, static (state, i) => state.Process(i));
+                        Dispatcher.For(0, 10, this, static (state, i) => state.Process(i));
+                        Dispatcher.For(0, 10, this, static (state, i) => state.total += i);
+                        Dispatcher.For(0, 10, default(object), static (_, i) => System.Console.WriteLine(i));
+                        var scale = 2;
+                        Dispatcher.ForEach(items, (self: this, scale), static (state, item) => state.self.Process(item * state.scale));
+                        Dispatcher.ForEach(items, this, static (state, item) => { state.Process(item); });
+                        Dispatcher.ForBatched(hits.Length, hits, static (state, from, toExclusive) =>
+                        {
+                            for (int i = from; i < toExclusive; i++)
+                                state[i]++;
+                        });
+                        Dispatcher.ForEach(items, this, static (state, value) => state.Process(value));
+                    }
+                }
+            }
+            """;
+        Assert.Equal(expected.ReplaceLineEndings(), result.ReplaceLineEndings());
+        AssertCompiles(result.Replace(OldDispatcherSource, NewDispatcherSource));
+    }
+
+    [Fact]
+    public async Task DispatcherCallbacksThatCannotMoveAreLeftAlone()
+    {
+        var user = """
+            namespace Game
+            {
+                public class Processor
+                {
+                    private readonly List<int> items = new();
+
+                    public void Update(Dictionary<int, int> map, System.Action<int> callback)
+                    {
+                        // Writes a captured local
+                        var count = 0;
+                        Dispatcher.For(0, 10, i => count++);
+                        // A dictionary with a per-batch local: a loop would index it by key
+                        Dispatcher.ForEach(map, () => new List<int>(), (pair, list) => list.Add(pair.Key));
+                        // A per-batch local with a range that doesn't start at a constant
+                        Dispatcher.For(count, 10, () => new List<int>(), (i, list) => list.Add(i));
+                        // Writes its per-item parameter, which the loop would share
+                        Dispatcher.For(0, 10, () => new List<int>(), (i, list) => list = null);
+                        // Not a lambda nor a method
+                        Dispatcher.For(0, 10, callback);
+                        // Calls a local function that captures
+                        void Log(int i) => System.Console.WriteLine(i + count);
+                        Dispatcher.For(0, 10, i => Log(i));
+                    }
+                }
+            }
+            """;
+        var source = OldDispatcherSource + user;
+
+        var result = await ApplyAsync(source, DispatcherUpgrade);
+
+        Assert.Equal(source.ReplaceLineEndings(), result.ReplaceLineEndings());
+    }
+
+    [Fact]
+    public async Task DispatcherNestedCallbacksMoveTheInnerOne()
+    {
+        var source = OldDispatcherSource + """
+            namespace Game
+            {
+                public class Processor
+                {
+                    private readonly List<List<int>> groups = new();
+
+                    private void Process(int value) { }
+
+                    public void Update()
+                    {
+                        Dispatcher.ForEach(groups, group => Dispatcher.ForEach(group, item => Process(item)));
+                    }
+                }
+            }
+            """;
+
+        var result = await ApplyAsync(source, DispatcherUpgrade);
+
+        Assert.Contains("Dispatcher.ForEach(groups, group => Dispatcher.ForEach(group, this, static (state, item) => state.Process(item)));", result);
+    }
+
+    [Fact]
+    public async Task DispatcherLocalCallbacksBecomeForBatched()
+    {
+        var source = OldDispatcherSource + """
+            namespace Game
+            {
+                public class Processor
+                {
+                    private readonly List<int> items = new();
+                    private readonly Stack<List<int>> pool = new();
+
+                    private void Process(int value, List<int> scratch) { }
+
+                    public void Update(int count)
+                    {
+                        Dispatcher.For(0, count, () => pool.Pop(), (i, scratch) =>
+                        {
+                            if (i % 2 == 0)
+                                return;
+                            Process(i, scratch);
+                        }, scratch => pool.Push(scratch));
+                        Dispatcher.ForEach<int, List<int>, List<int>>(items, () => new List<int>(), (item, scratch) => Process(item, scratch));
+                    }
+                }
+            }
+            """;
+
+        var result = await ApplyAsync(source, DispatcherUpgrade);
+
+        var expected = OldDispatcherSource + """
+            namespace Game
+            {
+                public class Processor
+                {
+                    private readonly List<int> items = new();
+                    private readonly Stack<List<int>> pool = new();
+
+                    private void Process(int value, List<int> scratch) { }
+
+                    public void Update(int count)
+                    {
+                        Dispatcher.ForBatched(count, this, static (state, start, endExclusive) =>
+                        {
+                            var scratch = state.pool.Pop();
+                            try
+                            {
+                                for (int i = start; i < endExclusive; i++)
+                                {
+                                    if (i % 2 == 0)
+                                        continue;
+                                    state.Process(i, scratch);
+                                }
+                            }
+                            finally
+                            {
+                                state.pool.Push(scratch);
+                            }
+                        });
+                        Dispatcher.ForBatched(items.Count, (self: this, collection: items), static (state, start, endExclusive) =>
+                        {
+                            var scratch = new List<int>();
+                            for (int index = start; index < endExclusive; index++)
+                            {
+                                var item = state.collection[index];
+                                state.self.Process(item, scratch);
+                            }
+                        });
+                    }
+                }
+            }
+            """;
+        Assert.Equal(expected.ReplaceLineEndings(), result.ReplaceLineEndings());
+        AssertCompiles(result.Replace(OldDispatcherSource, NewDispatcherSource));
+    }
+
+    [Fact]
+    public async Task DispatcherDictionaryCallbackMovesButNoLongerCompiles()
+    {
+        var source = OldDispatcherSource + """
+            namespace Game
+            {
+                public class Processor
+                {
+                    private void Process(int key) { }
+
+                    public void Update(Dictionary<int, string> map)
+                    {
+                        Dispatcher.ForEach(map, pair => Process(pair.Key));
+                    }
+                }
+            }
+            """;
+
+        var result = await ApplyAsync(source, DispatcherUpgrade);
+
+        Assert.Contains("Dispatcher.ForEach(map, this, static (state, pair) => state.Process(pair.Key));", result);
+        // The author picks a collection with an index
+        var syntaxTree = CSharpSyntaxTree.ParseText(result.Replace(OldDispatcherSource, NewDispatcherSource), new CSharpParseOptions(LanguageVersion.Preview));
+        var compilation = CSharpCompilation.Create("Check", [syntaxTree], FrameworkReferences(), new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+        Assert.Contains(compilation.GetDiagnostics(), x => x.Severity == DiagnosticSeverity.Error && x.Location.SourceTree.GetText().ToString(x.Location.SourceSpan).Contains("ForEach"));
+    }
+}

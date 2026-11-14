@@ -1,0 +1,94 @@
+﻿<Project>
+  <Import Project="$([MSBuild]::GetDirectoryNameOfFileAbove($(MSBuildProjectDirectory), 'Directory.Build.props'))/sdk/Stride.Build.Sdk/Sdk/Sdk.props" />
+  <PropertyGroup>
+    <!-- net8.0: VisualStudio.Extensibility out-of-process extensions run on the .NET 8 host runtime only
+         (net10 isn't supported yet, per microsoft/VSExtensibility#544) -->
+    <TargetFramework>net8.0-windows8.0</TargetFramework>
+    <RootNamespace>Stride.VisualStudio</RootNamespace>
+    <!-- Versioned independently of the engine (like the Stride CLI): this VersionPrefix is the source of truth,
+         bumped by hand per VS-package release. It starts at 4.4.0 (one minor above the old 4.3.x package).
+         release-vspackage.yml supplies VersionSuffix (e.g. beta1) for prerelease NuGet packages; the .vsix
+         manifest version is numeric-only, so it always ships the suffix-less AssemblyVersion (4.4.0.0). -->
+    <VersionPrefix>4.4.0</VersionPrefix>
+    <StrideAssemblyProcessor>false</StrideAssemblyProcessor>
+    <StrideSkipAutoPack>true</StrideSkipAutoPack>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <!-- The output window API is still marked experimental in the Extensibility SDK; opt into using it. -->
+    <NoWarn>$(NoWarn);VSEXTPREVIEW_OUTPUTWINDOW</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Extension icon referenced by ExtensionConfiguration.Metadata.Icon (Content is IncludeInVSIX by default). -->
+    <Content Include="Resources\GameStudio.png" />
+    <!-- RemoteUserControl XAML: embedded (loaded by type name), not compiled as a WPF Page. -->
+    <EmbeddedResource Include="Commands\VersionPickerControl.xaml" LogicalName="Stride.VisualStudio.Commands.VersionPickerControl.xaml" />
+    <Page Remove="Commands\VersionPickerControl.xaml" />
+    <EmbeddedResource Include="Commands\ShaderRegenControl.xaml" LogicalName="Stride.VisualStudio.Commands.ShaderRegenControl.xaml" />
+    <Page Remove="Commands\ShaderRegenControl.xaml" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.VisualStudio.Extensibility.Sdk" />
+    <PackageReference Include="Microsoft.VisualStudio.Extensibility.Build" />
+    <!-- StrideVersionResolver reads the Stride version from the solution/project. -->
+    <PackageReference Include="Microsoft.VisualStudio.SolutionPersistence" />
+    <PackageReference Include="NuGet.ProjectModel" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="..\..\shared\Stride.NuGetResolver\ProjectVersionReader.cs" Link="Shared\ProjectVersionReader.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Build-order only (this net8 package never references the net10 CLI assembly): pulls Stride.Cli into the
+         same MSBuild invocation so its shared Stride.Core (net10) is built once and deduped against the rest of
+         the solution, instead of the BundleStrideCli publish racing a concurrent build over Stride.Core's obj. -->
+    <ProjectReference Include="..\..\launcher\Stride.Cli\Stride.Cli.csproj"
+                      ReferenceOutputAssembly="false"
+                      SkipGetTargetFrameworkProperties="true"
+                      Private="false" />
+  </ItemGroup>
+  <!-- Bundle the (net10) stride CLI into the VSIX under tools\stride\ so the extension can spawn it. Publishing
+       framework-dependent keeps it small; it runs on the machine's .NET 10 install. -->
+  <!-- DependsOnTargets=ResolveProjectReferences builds the Stride.Cli reference first, so the publish below is a
+       no-op incremental over already-built outputs. BuildProjectReferences=false then stops the publish from
+       rebuilding (and locking) the shared Stride.Core; it only gathers Stride.Cli's framework-dependent closure. -->
+  <Target Name="BundleStrideCli" BeforeTargets="AssignTargetPaths" DependsOnTargets="ResolveProjectReferences">
+    <PropertyGroup>
+      <_StrideCliProject>$(MSBuildThisFileDirectory)..\..\launcher\Stride.Cli\Stride.Cli.csproj</_StrideCliProject>
+      <_StrideCliPublishDir>$(IntermediateOutputPath)stride-cli</_StrideCliPublishDir>
+    </PropertyGroup>
+    <Exec Command="dotnet publish &quot;$(_StrideCliProject)&quot; -f net10.0 -c $(Configuration) -o &quot;$(_StrideCliPublishDir)&quot; -p:BuildProjectReferences=false --nologo -v quiet" />
+    <ItemGroup>
+      <Content Include="$(_StrideCliPublishDir)\**\*">
+        <Link>tools\stride\%(RecursiveDir)%(Filename)%(Extension)</Link>
+        <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        <IncludeInVSIX>true</IncludeInVSIX>
+        <Visible>false</Visible>
+      </Content>
+    </ItemGroup>
+  </Target>
+
+  <!-- Returns the built .vsix path, derived from $(Configuration)/$(TargetFramework) via $(OutputPath), so the
+       delivery nuspec (packed by the _PackNuspec target of build/package.proj, from a .nuspec that can't evaluate MSBuild properties) doesn't hardcode them. -->
+  <Target Name="GetVsixOutputPath" Returns="$(OutputPath)$(TargetName).vsix" />
+
+  <!-- Returns the independent NuGet package version (VersionPrefix + optional VersionSuffix) so the nuspec,
+       packed by _PackNuspec with this version, tracks this project rather than the engine version. -->
+  <Target Name="GetPackageVersion" Returns="$(_VsPackageVersion)">
+    <PropertyGroup>
+      <_VsPackageVersion>$(VersionPrefix)</_VsPackageVersion>
+      <_VsPackageVersion Condition="'$(VersionSuffix)' != ''">$(VersionPrefix)-$(VersionSuffix)</_VsPackageVersion>
+    </PropertyGroup>
+  </Target>
+
+  <Import Project="$(StrideRoot)sources/sdk/Stride.Build.Sdk/Sdk/Sdk.targets" />
+
+  <!-- The Stride SDK turns these off to defer the assembly version to the shared SharedAssemblyInfo.cs. This
+       package versions independently (it doesn't link that file), so turn them back on — the built assembly's
+       AssemblyVersion (from VersionPrefix) is what ExtensionAssemblyVersion stamps into the .vsix manifest.
+       Placed after the SDK import so it overrides the SDK's defaults. -->
+  <PropertyGroup>
+    <GenerateAssemblyVersionAttribute>true</GenerateAssemblyVersionAttribute>
+    <GenerateAssemblyFileVersionAttribute>true</GenerateAssemblyFileVersionAttribute>
+    <GenerateAssemblyInformationalVersionAttribute>true</GenerateAssemblyInformationalVersionAttribute>
+  </PropertyGroup>
+</Project>

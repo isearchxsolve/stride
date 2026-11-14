@@ -1,0 +1,6 @@
+<Project>
+  <!-- MSBuild only finds sources/Directory.Build.props for projects under sources/. Importing it here gives the
+       projects under tests/ the same settings: $(StrideRoot) (it is computed from that file's folder, so it is the
+       same root) and the build properties every Stride project gets. -->
+  <Import Project="..\sources\Directory.Build.props" />
+</Project>

@@ -1,0 +1,263 @@
+<Project>
+  <Import Project="$([MSBuild]::GetDirectoryNameOfFileAbove($(MSBuildProjectDirectory), 'Directory.Build.props'))/sdk/Stride.Build.Sdk.Editor/Sdk/Sdk.props" />
+  <Import Project="..\..\shared\Stride.Core.ShellHelper\Stride.Core.ShellHelper.projitems" Label="Shared" />
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>$(StrideEditorTargetFramework)</TargetFramework>
+    <!-- Starts on the next .NET major when its own is not installed; its own is preferred when present. -->
+    <RollForward>Major</RollForward>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+    <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
+    <AssemblyName>Stride.GameStudio</AssemblyName>
+    <!-- Root app (never referenced as a library): pack the whole runnable under tools/ instead of lib/,
+         so the package isn't a phantom library. All payload flows through BuildOutputInPackage, so this
+         one property relocates everything (exe, dll, Roslyn, BuildHost, resolver bootstrap). -->
+    <BuildOutputTargetFolder>tools</BuildOutputTargetFolder>
+    <!-- NU5128: an app package intentionally has no lib/, but still declares its dependency closure. -->
+    <NoWarn>$(NoWarn);NU5128</NoWarn>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <StrideAssemblyProcessor>true</StrideAssemblyProcessor>
+    <StrideAssemblyProcessorOptions>--auto-module-initializer</StrideAssemblyProcessorOptions>
+    <StrideLocalized>true</StrideLocalized>
+    <StrideNuGetResolverUI>true</StrideNuGetResolverUI>
+    <StrideSTAThreadOnMain>true</StrideSTAThreadOnMain>
+    <!-- Lay graphics-API DLLs into per-API subfolders so the API is chosen at launch. -->
+    <StrideMultiGraphicsApiHost>true</StrideMultiGraphicsApiHost>
+    <!-- Desktop-only tool: drop non-desktop runtimes/<rid>/ from the no-RID output. -->
+    <StrideToolingHost>true</StrideToolingHost>
+    <UseWPF>true</UseWPF>
+    <EnableDefaultPageItems>false</EnableDefaultPageItems>
+    <EnableDefaultApplicationDefinition>false</EnableDefaultApplicationDefinition>
+  </PropertyGroup>
+  <PropertyGroup>
+    <StartupObject>Stride.GameStudio.Program</StartupObject>
+  </PropertyGroup>
+  <PropertyGroup>
+    <ApplicationIcon>Resources\GameStudio.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.StringTools" ExcludeAssets="runtime" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.Build.Framework" ExcludeAssets="runtime" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.Build" ExcludeAssets="runtime" PrivateAssets="all" />
+    <PackageReference Include="ServiceWire" />
+    <PackageReference Include="Mono.Cecil" />
+    <PackageReference Include="SSH.NET" />
+    <Reference Include="Stride.Core.AssemblyProcessor">
+      <HintPath Condition="$(TargetFramework.StartsWith('net10'))">..\..\..\deps\AssemblyProcessor\netstandard2.0\Stride.Core.AssemblyProcessor.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+  <ItemGroup>
+    <Page Include="**\*.xaml" SubType="Designer" Generator="MSBuild:Compile" Exclude="App.xaml" />
+    <Compile Update="**\*.xaml.cs" SubType="Code" DependentUpon="%(Filename)" />
+    <ApplicationDefinition Include="App.xaml">
+      <Generator>MSBuild:Compile</Generator>
+      <SubType>Designer</SubType>
+    </ApplicationDefinition>
+    <Compile Include="..\..\core\Stride.Core.IO\TemporaryFile.cs">
+      <Link>Debugging\TemporaryFile.cs</Link>
+    </Compile>
+    <Compile Include="..\..\shared\SharedAssemblyInfo.cs">
+      <Link>Properties\SharedAssemblyInfo.cs</Link>
+    </Compile>
+    <Compile Include="..\..\shared\LoaderToolLocator\LoaderToolLocator.cs" Link="LoaderToolLocator.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <AppDesigner Include="Properties\" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\engine\Stride.Debugger\Stride.Debugger.csproj" />
+    <ProjectReference Include="..\..\tools\Stride.ConnectionRouter\Stride.ConnectionRouter.csproj" /> 
+    <ProjectReference Include="..\..\tools\Stride.PackageInstall\Stride.PackageInstall.csproj">
+      <Private>false</Private>
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <GlobalPropertiesToRemove>TargetFramework</GlobalPropertiesToRemove>
+      <SkipGetTargetFrameworkProperties>true</SkipGetTargetFrameworkProperties>
+    </ProjectReference>
+    <!-- Soft references to the plugins so their dev packages are up to date on every editor build -->
+    <ProjectReference Include="..\..\plugins\BepuPhysics\Stride.BepuPhysics\Stride.BepuPhysics.csproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+    </ProjectReference>
+    <ProjectReference Include="..\..\plugins\BepuPhysics\Stride.BepuPhysics.Assets\Stride.BepuPhysics.Assets.csproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+    </ProjectReference>
+    <ProjectReference Include="..\..\plugins\Audio\Stride.Audio\Stride.Audio.csproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+    </ProjectReference>
+    <ProjectReference Include="..\..\plugins\Audio\Stride.Audio.Assets\Stride.Audio.Assets.csproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+    </ProjectReference>
+    <ProjectReference Include="..\..\plugins\Audio\Stride.Audio.Editor\Stride.Audio.Editor.csproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+    </ProjectReference>
+    <ProjectReference Include="..\..\plugins\Audio\Stride.Audio.Editor.Wpf\Stride.Audio.Editor.Wpf.csproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+    </ProjectReference>
+    <ProjectReference Include="..\..\plugins\BulletPhysics\Stride.Physics.Assets\Stride.Physics.Assets.csproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+    </ProjectReference>
+    <ProjectReference Include="..\..\plugins\BulletPhysics\Stride.Physics.Editor\Stride.Physics.Editor.csproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+    </ProjectReference>
+    <ProjectReference Include="..\..\plugins\SpriteStudio\Stride.SpriteStudio.Assets\Stride.SpriteStudio.Assets.csproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+    </ProjectReference>
+    <ProjectReference Include="..\..\plugins\SpriteStudio\Stride.SpriteStudio.Editor\Stride.SpriteStudio.Editor.csproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+    </ProjectReference>
+    <ProjectReference Include="..\..\plugins\Video\Stride.Video\Stride.Video.csproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+    </ProjectReference>
+    <ProjectReference Include="..\..\plugins\Voxels\Stride.Voxels\Stride.Voxels.csproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+    </ProjectReference>
+    <ProjectReference Include="..\..\plugins\Voxels\Stride.Voxels.Editor\Stride.Voxels.Editor.csproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+    </ProjectReference>
+    <ProjectReference Include="..\..\plugins\Particles\Stride.Particles\Stride.Particles.csproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+    </ProjectReference>
+    <ProjectReference Include="..\..\plugins\Particles\Stride.Particles.Editor\Stride.Particles.Editor.csproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+    </ProjectReference>
+    <ProjectReference Include="..\..\plugins\Video\Stride.Video.Assets\Stride.Video.Assets.csproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+    </ProjectReference>
+    <ProjectReference Include="..\..\plugins\Video\Stride.Video.Editor\Stride.Video.Editor.csproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+    </ProjectReference>
+    <ProjectReference Include="..\..\plugins\UI\Stride.UI\Stride.UI.csproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+    </ProjectReference>
+    <ProjectReference Include="..\..\plugins\UI\Stride.UI.Assets\Stride.UI.Assets.csproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+    </ProjectReference>
+    <ProjectReference Include="..\..\plugins\UI\Stride.UI.Editor\Stride.UI.Editor.csproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+    </ProjectReference>
+    <ProjectReference Include="..\..\plugins\UI\Stride.UI.Editor.Wpf\Stride.UI.Editor.Wpf.csproj">
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+    </ProjectReference>
+    <ProjectReference Include="..\Stride.Assets.Presentation.Wpf\Stride.Assets.Presentation.Wpf.csproj" />
+    <ProjectReference Include="..\..\tools\Stride.EffectCompilerServer\Stride.EffectCompilerServer.csproj" IncludeAssets="Build" />
+    <ProjectReference Include="..\..\crashreport\Stride.CrashReport\Stride.CrashReport.csproj" />
+    <!-- Sentry is used by the core's crash sender at send time, but it's PrivateAssets=all in the core (to keep
+         its Roslyn generator out of game builds) so it doesn't flow here. Reference it directly so Sentry.dll is
+         deployed for the in-process auto-send (STRIDE_CRASH_MODE=send); PrivateAssets=all keeps it from flowing onward.
+         The installed GameStudio resolves from the store, where a private package isn't: there the send falls
+         back to saving the report. -->
+    <PackageReference Include="Sentry" PrivateAssets="all" />
+    <!-- The out-of-process reporter, resolved from the store at crash time. Private=false emits the nuspec
+         <dependency> (so a Stride install pulls the reporter in) without copying its self-contained closure
+         into our bin. ReferenceOutputAssembly=false would suppress the dependency. -->
+    <ProjectReference Include="..\..\crashreport\Stride.CrashReporter\Stride.CrashReporter.csproj">
+      <Private>false</Private>
+    </ProjectReference>
+    <!-- NuGet dependencies (and build-ordering triggers) on the three template packages, so a Stride
+         install pulls them in. Private=false alone emits a content-only nuspec <dependency> (the templates
+         produce no assembly to reference) — same idiom as the Stride.Core marker dep in
+         Stride.Templates.Common.targets. ReferenceOutputAssembly=false would suppress the dependency.
+         Games is engine-versioned and packed with every build. Starters and Samples are content-versioned
+         (sources/templates/StrideSamplesVersion.props): a normal build does not pack them and the dependency
+         names the exact published version (pinned below); with StridePackContentTemplates=true it follows the
+         produced -devN pack. A PackageReference would not do: restore would fail before the first publish of a new
+         version. -->
+    <ProjectReference Include="..\..\templates\Stride.Templates.Games\Stride.Templates.Games.csproj">
+      <Private>false</Private>
+    </ProjectReference>
+    <ProjectReference Include="..\..\templates\Stride.Templates.Games.Starters\Stride.Templates.Games.Starters.csproj">
+      <Private>false</Private>
+      <StrideExactDependency>true</StrideExactDependency>
+    </ProjectReference>
+    <ProjectReference Include="..\..\templates\Stride.Templates.Samples\Stride.Templates.Samples.csproj">
+      <Private>false</Private>
+      <StrideExactDependency>true</StrideExactDependency>
+    </ProjectReference>
+    <!-- Build-ordering only (no nuspec dependency): asset packs are fetched on demand by the New
+         Game dialog, not pulled at install time. The reference just makes a dev GameStudio build
+         produce the .nupkg so the packs show up locally. -->
+    <ProjectReference Include="..\..\templates\Stride.Templates.AssetPacks\Stride.Templates.AssetPacks.csproj">
+      <Private>false</Private>
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <SkipGetTargetFrameworkProperties>true</SkipGetTargetFrameworkProperties>
+    </ProjectReference>
+  </ItemGroup>
+  <!-- NuGet records a ProjectReference dependency as ">= version"; the content template packs are pinned to the
+       exact version ("[version]") instead, so an install fails loudly when it is missing from the feed rather than
+       silently resolving to a later content version the engine did not ship with. NuGet's cross-project version
+       query fills _ProjectReferencesWithVersions right before the nuspec is written; the pinned ones are marked
+       StrideExactDependency above. -->
+  <Target Name="StridePinExactTemplateDependencies" AfterTargets="_GetProjectReferenceVersions">
+    <PropertyGroup>
+      <_StrideExactDependencyNames>;@(ProjectReference->WithMetadataValue('StrideExactDependency', 'true')->'%(Filename)');</_StrideExactDependencyNames>
+    </PropertyGroup>
+    <ItemGroup>
+      <_ProjectReferencesWithVersions Condition="$(_StrideExactDependencyNames.Contains(';%(_ProjectReferencesWithVersions.Filename);')) And !$([System.String]::Copy('%(_ProjectReferencesWithVersions.ProjectVersion)').StartsWith('['))">
+        <ProjectVersion>[%(_ProjectReferencesWithVersions.ProjectVersion)]</ProjectVersion>
+      </_ProjectReferencesWithVersions>
+    </ItemGroup>
+    <Message Importance="low" Text="Template dependencies: @(_ProjectReferencesWithVersions->WithMetadataValue('Extension', '.csproj')->'%(Filename) %(ProjectVersion)', ', ')" />
+  </Target>
+  <ItemGroup>
+    <Content Include="..\..\..\BACKERS.md" Link="BACKERS.md">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\..\..\LICENSE.md" Link="LICENSE.md">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\..\..\THIRD-PARTY-NOTICES.md" Link="THIRD-PARTY-NOTICES.md">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <None Include="app.config">
+      <SubType>Designer</SubType>
+    </None>
+    <None Include="app.manifest">
+      <SubType>Designer</SubType>
+    </None>
+  </ItemGroup>
+  <!-- Resources -->
+  <ItemGroup>
+    <Resource Include="Images\*.png" />
+    <Resource Include="Resources\**\*.png" />
+    <Resource Include="Resources\GameStudio.ico" />
+    <Compile Update="Resources\Strings\KeyGestures.Designer.cs">
+      <DependentUpon>KeyGestures.resx</DependentUpon>
+      <AutoGen>True</AutoGen>
+      <DesignTime>True</DesignTime>
+    </Compile>
+    <EmbeddedResource Update="Resources\Strings\KeyGestures.resx">
+      <Generator>PublicResXFileCodeGenerator</Generator>
+      <LastGenOutput>KeyGestures.Designer.cs</LastGenOutput>
+      <SubType>Designer</SubType>
+    </EmbeddedResource>
+  </ItemGroup>
+  <Import Project="..\..\shared\Stride.NuGetResolver.Targets\Stride.NuGetResolver.Targets.projitems" Label="Shared" />
+
+  <PropertyGroup>
+    <TargetsForTfmSpecificBuildOutput>_StrideIncludeExtraAssemblies;$(TargetsForTfmSpecificBuildOutput)</TargetsForTfmSpecificBuildOutput>
+  </PropertyGroup>
+  <Target Name="_StrideIncludeExtraAssemblies">
+    <ItemGroup>
+      <!-- We need to manually include Microsoft.CodeAnalysis.Workspaces.MSBuild.dll, buildhost and analyzer dlls because it expects those to be side-by-side (which is not the case in the nuget folder with contentFiles folder) -->
+      <!-- As a future improvement, two possible fixes: (1) we might want to copy all dll and contents in a folder during NuGetResolver so that it behaves similar to a normal build, or (2) PR MSBuild to have this configurable -->
+      <BuildOutputInPackage Include="$(TargetDir)Microsoft.CodeAnalysis.dll" />
+      <BuildOutputInPackage Include="$(TargetDir)Microsoft.CodeAnalysis.CSharp.dll" />
+      <BuildOutputInPackage Include="$(TargetDir)Microsoft.CodeAnalysis.Features.dll" />
+      <BuildOutputInPackage Include="$(TargetDir)Microsoft.CodeAnalysis.CSharp.Features.dll" />
+      <BuildOutputInPackage Include="$(TargetDir)Microsoft.CodeAnalysis.Workspaces.MSBuild.dll" />
+      <BuildHostFiles Include="$(TargetDir)BuildHost-netcore\**\*.*" />
+      <BuildOutputInPackage Include="%(BuildHostFiles.Identity)">
+        <TargetPath>BuildHost-netcore\%(BuildHostFiles.RecursiveDir)%(BuildHostFiles.Filename)%(BuildHostFiles.Extension)</TargetPath>
+      </BuildOutputInPackage>
+
+      <BuildOutputInPackage Include="$(TargetDir)Stride.Core.AssemblyProcessor.*" />
+    </ItemGroup>
+  </Target>
+  <Target Name="_StrideGameStudioCopyPackageInstall" BeforeTargets="_GetPackageFiles">
+    <ItemGroup>
+      <None Include="..\..\tools\Stride.PackageInstall\bin\$(Configuration)\*.*" PackagePath="tools\" Pack="true" />
+    </ItemGroup>
+  </Target>
+  <Import Project="$(StrideRoot)sources/sdk/Stride.Build.Sdk.Editor/Sdk/Sdk.targets" />
+</Project>

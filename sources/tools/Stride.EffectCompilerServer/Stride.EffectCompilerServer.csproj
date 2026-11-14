@@ -1,0 +1,27 @@
+<Project>
+  <Import Project="$([MSBuild]::GetDirectoryNameOfFileAbove($(MSBuildProjectDirectory), 'Directory.Build.props'))/sdk/Stride.Build.Sdk.Editor/Sdk/Sdk.props" />
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>$(StrideEditorTargetFramework)</TargetFramework>
+    <!-- Root app (only spawned as a service, never referenced as a library): pack the whole runnable
+         under tools/ instead of lib/. The router locates the exe by package file search. -->
+    <BuildOutputTargetFolder>tools</BuildOutputTargetFolder>
+    <!-- NU5128: an app package intentionally has no lib/, but still declares its dependency closure. -->
+    <NoWarn>$(NoWarn);NU5128</NoWarn>
+    <StrideAssemblyProcessor>true</StrideAssemblyProcessor>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Mono.Options" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="..\..\shared\SharedAssemblyInfo.cs">
+      <Link>Properties\SharedAssemblyInfo.cs</Link>
+    </Compile>
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\engine\Stride.Assets\Stride.Assets.csproj" />
+    <ProjectReference Include="..\Stride.ConnectionRouter\Stride.ConnectionRouter.csproj" />
+  </ItemGroup>
+  <Import Project="..\..\shared\Stride.NuGetResolver.Targets\Stride.NuGetResolver.Targets.projitems" Label="Shared" />
+  <Import Project="$(StrideRoot)sources/sdk/Stride.Build.Sdk.Editor/Sdk/Sdk.targets" />
+</Project>

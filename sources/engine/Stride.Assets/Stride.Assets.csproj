@@ -1,0 +1,75 @@
+<Project>
+  <Import Project="$([MSBuild]::GetDirectoryNameOfFileAbove($(MSBuildProjectDirectory), 'Directory.Build.props'))/sdk/Stride.Build.Sdk.Editor/Sdk/Sdk.props" />
+  <PropertyGroup>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <TargetFramework>$(StrideXplatEditorTargetFramework)</TargetFramework>
+    <StrideAssemblyProcessor>true</StrideAssemblyProcessor>
+    <StrideAssemblyProcessorOptions>--parameter-key --auto-module-initializer --serialization</StrideAssemblyProcessorOptions>
+    <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
+  </PropertyGroup>
+  <!-- The content version this engine names, read by DotNetNewTemplateBridge: the committed file itself (not a
+       -p:StrideSamplesVersion= override, which only names what a samples release is packing). A resource, not an
+       assembly attribute, so a new version stays out of the reference assembly and dependents don't rebuild. -->
+  <ItemGroup>
+    <EmbeddedResource Include="$(StrideRoot)sources\templates\StrideSamplesVersion.props"
+                      LogicalName="StrideSamplesVersion.props" Link="Templates\StrideSamplesVersion.props" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.StringTools" ExcludeAssets="runtime" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.Build.Framework" ExcludeAssets="runtime" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.Build" ExcludeAssets="runtime" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.Build.Utilities.Core" ExcludeAssets="runtime" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Workspaces" />
+    <PackageReference Include="Microsoft.CodeAnalysis.Workspaces.MSBuild" />
+    <PackageReference Include="SixLabors.ImageSharp" />
+    <PackageReference Include="SSH.NET" PrivateAssets="compile" />
+    <PackageReference Include="Microsoft.TemplateEngine.IDE" />
+    <PackageReference Include="Microsoft.TemplateEngine.Edge" />
+    <PackageReference Include="Microsoft.TemplateEngine.Abstractions" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\assets\Stride.Core.Assets\Stride.Core.Assets.csproj" />
+    <ProjectReference Include="..\..\assets\Stride.Core.Assets.Quantum\Stride.Core.Assets.Quantum.csproj" />
+    <ProjectReference Include="..\..\tools\Stride.TextureConverter\Stride.TextureConverter.csproj" />
+    <ProjectReference Include="..\Stride.Engine\Stride.Engine.csproj" />
+    <ProjectReference Include="..\Stride.Foundation\Stride.Foundation.csproj" />
+    <ProjectReference Include="..\Stride.Assets.VHACD\Stride.Assets.VHACD.csproj" />
+    <ProjectReference Include="..\Stride.Assets.FFmpeg\Stride.Assets.FFmpeg.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="..\..\shared\Stride.NuGetResolver\ProjectVersionReader.cs" Link="ProjectVersionReader.cs" />
+    <Compile Include="..\..\shared\SharedAssemblyInfo.cs">
+      <Link>Properties\SharedAssemblyInfo.cs</Link>
+    </Compile>
+    <None Include="build\**\*.targets" PackagePath="build\" Pack="true" />
+    <None Include="build\**\*.targets" PackagePath="buildTransitive\" Pack="true" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="AssetPackage\Assets\Shared\DefaultGraphicsCompositorLevel10.sdgfxcomp" />
+    <None Include="AssetPackage\Assets\Shared\DefaultGraphicsCompositorLevel9.sdgfxcomp" />
+    <None Include="AssetPackage\Assets\Shared\StrideClearCoatMetalFlakesNM.sdtex" />
+    <None Include="AssetPackage\Assets\Shared\StrideClearCoatOrangePeelNM.sdtex" />
+    <None Include="AssetPackage\Assets\Shared\StrideDebugSpriteFont.sdtex" />
+    <None Include="AssetPackage\Assets\Shared\StrideDefaultFont.sdfnt" />
+    <None Include="AssetPackage\Assets\Shared\StrideDefaultSplashScreen.sdtex" />
+    <None Include="AssetPackage\Assets\Shared\StrideEnvironmentLightingDFGLUT16.sdtex" />
+    <None Include="AssetPackage\Assets\Shared\StrideEnvironmentLightingDFGLUT8.sdtex" />
+    <None Include="AssetPackage\StrideAssetPackage.sdpkg" />
+  </ItemGroup>
+  <ItemGroup>
+    <StrideNativeLib Include="..\..\..\deps\msdfgen\Release\**\*.dll;..\..\..\deps\msdfgen\Release\**\*.so;..\..\..\deps\msdfgen\Release\**\*.dylib">
+      <Link>runtimes\%(RecursiveDir)native\%(Filename)%(Extension)</Link>
+    </StrideNativeLib>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="AssetPackage\Resources\ClearCoatMetalFlakesNM.dds" />
+    <None Include="AssetPackage\Resources\ClearCoatOrangePeelNM.dds" />
+    <None Include="AssetPackage\Resources\EnvironmentLightingDFGLUT16.dds" />
+    <None Include="AssetPackage\Resources\EnvironmentLightingDFGLUT8.dds" />
+    <None Include="AssetPackage\Resources\StrideDebugSpriteFont.png" />
+    <None Include="AssetPackage\Resources\StrideDefaultSplashScreen.png" />
+  </ItemGroup>
+  <Import Project="..\..\shared\Stride.Core.ShellHelper\Stride.Core.ShellHelper.projitems" Label="Shared" />
+
+  <Import Project="$(StrideRoot)sources/sdk/Stride.Build.Sdk.Editor/Sdk/Sdk.targets" />
+</Project>

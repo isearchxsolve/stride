@@ -1,0 +1,317 @@
+// Copyright (c) .NET Foundation and Contributors (https://dotnetfoundation.org/ & https://stride3d.net) and Silicon Studio Corp. (https://www.siliconstudio.co.jp)
+// Distributed under the MIT license. See the LICENSE.md file in the project root for more information.
+
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using Stride.Core;
+using Stride.Core.Extensions;
+using Stride.Core.Mathematics;
+using Stride.Core.Threading;
+using Stride.Engine;
+using Stride.Graphics;
+using Stride.Rendering.Materials;
+using Stride.Rendering.Materials.ComputeColors;
+
+namespace Stride.Rendering
+{
+    public class ModelRenderProcessor : EntityProcessor<ModelComponent, RenderModel>, IEntityComponentRenderProcessor
+    {
+        private Material fallbackMaterial;
+        private ModelDeformationRenderer deformationRenderer;
+        // ComponentDatas in a list, so that Draw can split it into batches
+        private readonly List<(ModelComponent Component, RenderModel RenderModel)> renderModelList = new();
+
+        public Dictionary<ModelComponent, RenderModel> RenderModels => ComponentDatas;
+
+        /// <summary>
+        /// Forces the mesh deformation path, for benchmarks and tests. <c>null</c> (the default) deforms meshes with morph
+        /// targets in compute when the device supports it, and leaves skinning-only meshes to the vertex shader.
+        /// </summary>
+        internal static MeshDeformationOverride DeformationOverride { get; set; }
+
+        /// <summary>
+        /// The renderer deforming models with morph targets or compute skinning, for tests.
+        /// </summary>
+        internal ModelDeformationRenderer DeformationRenderer => deformationRenderer;
+
+        public VisibilityGroup VisibilityGroup { get; set; }
+
+        public ModelRenderProcessor() : base(typeof(TransformComponent))
+        {
+        }
+
+        /// <inheritdoc />
+        protected internal override void OnSystemAdd()
+        {
+            var graphicsDevice = Services.GetSafeServiceAs<IGraphicsDeviceService>().GraphicsDevice;
+
+            fallbackMaterial = Material.New(graphicsDevice, new MaterialDescriptor
+            {
+                Attributes =
+                {
+                    Diffuse = new MaterialDiffuseMapFeature(new ComputeTextureColor()),
+                    DiffuseModel = new MaterialDiffuseLambertModelFeature(),
+                },
+            });
+        }
+
+        /// <inheritdoc />
+        protected override RenderModel GenerateComponentData(Entity entity, ModelComponent component)
+        {
+            return new RenderModel();
+        }
+
+        /// <inheritdoc />
+        protected override bool IsAssociatedDataValid(Entity entity, ModelComponent component, RenderModel associatedData)
+        {
+            return true;
+        }
+
+        /// <inheritdoc />
+        protected override void OnEntityComponentAdding(Entity entity, ModelComponent component, RenderModel renderModel)
+        {
+            renderModelList.Add((component, renderModel));
+        }
+
+        /// <inheritdoc />
+        protected override void OnEntityComponentRemoved(Entity entity, ModelComponent component, RenderModel renderModel)
+        {
+            renderModelList.SwapRemove((component, renderModel));
+
+            deformationRenderer?.Remove(component);
+            // Remove old meshes
+            if (renderModel.Meshes != null)
+            {
+                foreach (var renderMesh in renderModel.Meshes)
+                {
+                    // Unregister from render system
+                    VisibilityGroup.RenderObjects.Remove(renderMesh);
+                }
+            }
+        }
+
+        protected internal override void OnSystemRemove()
+        {
+            deformationRenderer?.Dispose();
+            deformationRenderer = null;
+            base.OnSystemRemove();
+        }
+
+        /// <inheritdoc />
+        public override void Draw(RenderContext context)
+        {
+            // Note: we are rebuilding RenderMeshes every frame
+            // TODO: check if it wouldn't be better to add/remove directly in CheckMeshes()?
+            Dispatcher.ForBatched(renderModelList.Count, new UpdateRenderModelJob { Processor = this });
+
+            // Schedules the deformation of each model; MeshRenderFeature deforms the ones a view collects.
+            var deformationOverride = DeformationOverride;
+            bool computeSkinning = deformationOverride?.Mode == MeshDeformationMode.Compute;
+            deformationRenderer?.Configure(deformationOverride);
+            deformationRenderer?.BeginFrame();
+            foreach (var item in ComponentDatas)
+            {
+                bool hasMorphs = item.Key.Morphs.Enabled && item.Key.Model?.Meshes.Exists(mesh => mesh.MorphTargets?.VertexCount > 0) == true;
+                bool hasSkinning = computeSkinning && item.Key.Model?.Meshes.Exists(mesh => mesh.Skinning != null) == true;
+                if (!item.Key.Enabled || item.Key.Model == null || (!hasMorphs && !hasSkinning))
+                {
+                    deformationRenderer?.Remove(item.Key);
+                    item.Value.Deformer = null;
+                    continue;
+                }
+                if (deformationRenderer == null)
+                {
+                    deformationRenderer = new ModelDeformationRenderer(new RenderDrawContext(Services, context, Services.GetSafeServiceAs<GraphicsContext>()));
+                    deformationRenderer.Configure(deformationOverride);
+                }
+                deformationRenderer.Schedule(item.Key, item.Value);
+            }
+        }
+
+        private readonly struct UpdateRenderModelJob : Dispatcher.IBatchJob
+        {
+            public required ModelRenderProcessor Processor { get; init; }
+
+            public void Process(int start, int endExclusive)
+            {
+                foreach (var (modelComponent, renderModel) in CollectionsMarshal.AsSpan(Processor.renderModelList)[start..endExclusive])
+                {
+                    Processor.CheckMeshes(modelComponent, renderModel);
+                    Processor.UpdateRenderModel(modelComponent, renderModel);
+                }
+            }
+        }
+
+        private void UpdateRenderModel(ModelComponent modelComponent, RenderModel renderModel)
+        {
+            if (modelComponent.Model == null)
+                return;
+
+            var modelViewHierarchy = modelComponent.Skeleton;
+            var nodeTransformations = modelViewHierarchy.NodeTransformations;
+
+            for (int sourceMeshIndex = 0; sourceMeshIndex < renderModel.Materials.Length; sourceMeshIndex++)
+            {
+                var passes = renderModel.Materials[sourceMeshIndex].MeshCount;
+                // Note: indices in RenderModel.Meshes and Model.Meshes are different (due to multipass materials)
+                var meshIndex = renderModel.Materials[sourceMeshIndex].MeshStartIndex;
+
+                for (int pass = 0; pass < passes; ++pass, ++meshIndex)
+                {
+                    var renderMesh = renderModel.Meshes[meshIndex];
+
+                    renderMesh.Enabled = modelComponent.Enabled;
+                    renderMesh.RenderGroup = modelComponent.RenderGroup;
+
+                    if (modelComponent.Enabled)
+                    {
+                        // Copy world matrix
+                        var mesh = renderModel.Model.Meshes[sourceMeshIndex];
+                        var meshInfo = modelComponent.MeshInfos[sourceMeshIndex];
+                        var nodeIndex = mesh.NodeIndex;
+                        renderMesh.World = nodeTransformations[nodeIndex].WorldMatrix;
+                        renderMesh.IsScalingNegative = nodeTransformations[nodeIndex].IsScalingNegative;
+                        renderMesh.BoundingBox = new BoundingBoxExt(meshInfo.BoundingBox);
+                        renderMesh.BlendMatrices = meshInfo.BlendMatrices;
+                        renderMesh.MorphBuffers = null;
+                    }
+                }
+            }
+        }
+
+        private void UpdateMaterial(RenderMesh renderMesh, MaterialPass materialPass, MaterialInstance modelMaterialInstance, ModelComponent modelComponent, Mesh sourceMesh)
+        {
+            var isShadowCaster = modelComponent.IsShadowCaster;
+            if (modelMaterialInstance != null)
+                isShadowCaster &= modelMaterialInstance.IsShadowCaster;
+
+            if (isShadowCaster != renderMesh.IsShadowCaster
+                || materialPass.HasTransparency != renderMesh.MaterialPass?.HasTransparency)
+            {
+                renderMesh.IsShadowCaster = isShadowCaster;
+                VisibilityGroup.NeedActiveRenderStageReevaluation = true;
+            }
+
+            renderMesh.MaterialPass = materialPass;
+            // Account for any changes made to the individual meshes
+            renderMesh.Mesh = sourceMesh;
+        }
+
+        private Material FindMaterial(Material materialOverride, MaterialInstance modelMaterialInstance)
+        {
+            return materialOverride ?? modelMaterialInstance?.Material ?? fallbackMaterial;
+        }
+
+        private void CheckMeshes(ModelComponent modelComponent, RenderModel renderModel)
+        {
+            // Check if model changed to update our cached data
+            var model = modelComponent.Model;
+            if (renderModel.Model != model)
+                goto RegenerateMeshes;
+
+            if (model == null)
+                return;
+
+            // Number of meshes changed in the model?
+            if (model.Meshes.Count != renderModel.UniqueMeshCount)
+                goto RegenerateMeshes;
+
+            if (!modelComponent.Enabled)
+                return;
+
+            // Check materials
+            var modelComponentMaterials = modelComponent.Materials;
+            for (int sourceMeshIndex = 0; sourceMeshIndex < model.Meshes.Count; sourceMeshIndex++)
+            {
+                ref var material = ref renderModel.Materials[sourceMeshIndex];
+                var materialIndex = model.Meshes[sourceMeshIndex].MaterialIndex;
+
+                var baseMaterial = model.Materials.GetItemOrNull(materialIndex);
+                var newMaterial = FindMaterial(modelComponentMaterials.SafeGet(materialIndex), baseMaterial);
+
+                // If material changed or its number of pass changed, trigger a full regeneration of RenderMeshes (note: we could do partial later)
+                if ((newMaterial?.Passes.Count ?? 1) != material.MeshCount)
+                    goto RegenerateMeshes;
+
+                // Update materials
+                material.Material = newMaterial;
+                int meshIndex = material.MeshStartIndex;
+                for (int pass = 0; pass < material.MeshCount; ++pass, ++meshIndex)
+                {
+                    UpdateMaterial(renderModel.Meshes[meshIndex], newMaterial?.Passes[pass], baseMaterial, modelComponent, model.Meshes[sourceMeshIndex]);
+                }
+            }
+
+            return;
+
+        RegenerateMeshes:
+            renderModel.Model = model;
+
+            // Remove old meshes
+            if (renderModel.Meshes != null)
+            {
+                lock (VisibilityGroup.RenderObjects)
+                {
+                    foreach (var renderMesh in renderModel.Meshes)
+                    {
+                        // Unregister from render system
+                        VisibilityGroup.RenderObjects.Remove(renderMesh);
+                    }
+                }
+            }
+
+            if (model == null)
+                return;
+
+            // Count meshes
+            var materialMeshCount = 0;
+            renderModel.Materials = new RenderModel.MaterialInfo[model.Meshes.Count];
+            for (int sourceMeshIndex = 0; sourceMeshIndex < model.Meshes.Count; sourceMeshIndex++)
+            {
+                var materialIndex = model.Meshes[sourceMeshIndex].MaterialIndex;
+                var material = FindMaterial(modelComponent.Materials.SafeGet(materialIndex), model.Materials.GetItemOrNull(materialIndex));
+                var meshCount = material?.Passes.Count ?? 1;
+                renderModel.Materials[sourceMeshIndex] = new RenderModel.MaterialInfo { Material = material, MeshStartIndex = materialMeshCount, MeshCount = meshCount };
+                materialMeshCount += meshCount;
+            }
+
+            // Create render meshes
+            var renderMeshes = new RenderMesh[materialMeshCount];
+            for (int sourceMeshIndex = 0; sourceMeshIndex < model.Meshes.Count; sourceMeshIndex++)
+            {
+                var mesh = model.Meshes[sourceMeshIndex];
+                ref var material = ref renderModel.Materials[sourceMeshIndex];
+                int meshIndex = material.MeshStartIndex;
+
+                for (int pass = 0; pass < material.MeshCount; ++pass, ++meshIndex)
+                {
+                    // TODO: Somehow, if material changed we might need to remove/add object in render system again (to evaluate new render stage subscription)
+                    var materialIndex = mesh.MaterialIndex;
+                    renderMeshes[meshIndex] = new RenderMesh
+                    {
+                        Source = modelComponent,
+                        RenderModel = renderModel,
+                    };
+
+                    // Update material
+                    UpdateMaterial(renderMeshes[meshIndex], material.Material?.Passes[pass], model.Materials.GetItemOrNull(materialIndex), modelComponent, mesh);
+                }
+            }
+
+            renderModel.Meshes = renderMeshes;
+            renderModel.UniqueMeshCount = model.Meshes.Count;
+
+            // Update before first add so that RenderGroup is properly set
+            UpdateRenderModel(modelComponent, renderModel);
+
+            // Update and register with render system
+            lock (VisibilityGroup.RenderObjects)
+            {
+                foreach (var renderMesh in renderMeshes)
+                {
+                    VisibilityGroup.RenderObjects.Add(renderMesh);
+                }
+            }
+        }
+    }
+}

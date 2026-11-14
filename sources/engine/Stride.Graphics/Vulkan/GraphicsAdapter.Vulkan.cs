@@ -1,0 +1,214 @@
+// Copyright (c) .NET Foundation and Contributors (https://dotnetfoundation.org/ & https://stride3d.net) and Silicon Studio Corp. (https://www.siliconstudio.co.jp)
+// Distributed under the MIT license. See the LICENSE.md file in the project root for more information.
+
+#if STRIDE_GRAPHICS_API_VULKAN
+
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using Vortice.Vulkan;
+
+using static Vortice.Vulkan.Vulkan;
+
+namespace Stride.Graphics
+{
+    /// <summary>
+    /// Provides methods to retrieve and manipulate Vulkan graphics adapters. This is the equivalent to IDXGIAdapter1.
+    /// </summary>
+    /// <msdn-id>ff471329</msdn-id>
+    /// <unmanaged>IDXGIAdapter1</unmanaged>
+    /// <unmanaged-short>IDXGIAdapter1</unmanaged-short>
+    public partial class GraphicsAdapter
+    {
+        private readonly object outputLock = new();
+        private DisplayInfo[] pendingDisplays;
+        private VkPhysicalDevice defaultPhysicalDevice;
+        private VkPhysicalDevice debugPhysicalDevice;
+
+        private readonly int adapterOrdinal;
+        // Index in vkEnumeratePhysicalDevices order; the ordinal is the sorted position.
+        private readonly int enumerationIndex;
+        private readonly VkPhysicalDeviceProperties properties;
+
+        /// <summary>
+        ///   The raw Vulkan API version supported by the physical device.
+        /// </summary>
+        internal VkVersion NativeApiVersion => properties.apiVersion;
+
+        private static readonly Dictionary<int, string> VendorNames = new Dictionary<int, string>
+        {
+            [0x1002] = "AMD",
+            [0x1010] = "ImgTec",
+            [0x10005] = "Mesa",
+            [0x10DE] = "NVIDIA",
+            [0x13B5] = "ARM",
+            [0x5143] = "Qualcomm",
+            [0x8086] = "INTEL",
+        };
+
+        /// <summary>
+        /// Initializes a new instance of the <see cref="GraphicsAdapter" /> class.
+        /// </summary>
+        /// <param name="defaultPhysicalDevice">The Vulkan physical device.</param>
+        /// <param name="properties">The physical device properties.</param>
+        /// <param name="driverProperties">The physical device driver properties.</param>
+        /// <param name="adapterUid">The unique identifier of the adapter.</param>
+        /// <param name="adapterOrdinal">The adapter ordinal.</param>
+        /// <param name="enumerationIndex">The index of the physical device in the instance's enumeration order.</param>
+        /// <param name="attachedDisplays">Native outputs or SDL presentation targets for this adapter.</param>
+        internal unsafe GraphicsAdapter(VkPhysicalDevice defaultPhysicalDevice, VkPhysicalDeviceProperties properties, VkPhysicalDeviceDriverProperties driverProperties, long adapterUid, int adapterOrdinal, int enumerationIndex, DisplayInfo[] attachedDisplays)
+        {
+            AdapterUid = adapterUid;
+            this.adapterOrdinal = adapterOrdinal;
+            this.enumerationIndex = enumerationIndex;
+            this.defaultPhysicalDevice = defaultPhysicalDevice;
+            this.properties = properties;
+
+            DriverInfo = new AdapterDriverInfo
+            {
+                GpuName = Description,
+                VendorId = properties.vendorID,
+                DeviceId = properties.deviceID,
+                VendorName = VendorNames.TryGetValue((int)properties.vendorID, out var v) ? v : null,
+                DriverId = driverProperties.sType == VkStructureType.PhysicalDeviceDriverProperties ? driverProperties.driverID.ToString() : null,
+                DriverName = driverProperties.sType == VkStructureType.PhysicalDeviceDriverProperties ? Marshal.PtrToStringAnsi((IntPtr)driverProperties.driverName) : null,
+                DriverInfo = driverProperties.sType == VkStructureType.PhysicalDeviceDriverProperties ? Marshal.PtrToStringAnsi((IntPtr)driverProperties.driverInfo) : null,
+                DriverVersion = FormatDriverVersion(properties.vendorID, properties.driverVersion),
+                ApiName = GraphicsDevice.Platform.ToString(),
+                ApiVersion = FormatApiVersion(properties.apiVersion),
+            };
+            pendingDisplays = attachedDisplays;
+        }
+
+        private void EnsureOutputs()
+        {
+            lock (outputLock)
+            {
+                if (graphicsOutputs != null)
+                    return;
+
+                // Windows data is captured at factory initialization; SDL may become
+                // available later. This path consumes managed data only.
+                var displays = pendingDisplays ?? DisplayEnumeration.SdlDisplays;
+                if (displays == null)
+                    return;
+
+                var outputs = new GraphicsOutput[displays.Length];
+                for (int index = 0; index < displays.Length; index++)
+                    outputs[index] = new GraphicsOutput(this, displays[index]);
+                graphicsOutputs = outputs;
+                pendingDisplays = null;
+            }
+        }
+
+        protected override void Destroy()
+        {
+            lock (outputLock)
+            {
+                if (graphicsOutputs != null)
+                    foreach (var output in graphicsOutputs)
+                        output.Dispose();
+            }
+            base.Destroy();
+        }
+
+        // NVIDIA packs 10/8/8/6 bits; Intel-on-Windows packs 18/14; everyone else uses the
+        // standard VK_MAKE_API_VERSION layout (major<<22 | minor<<12 | patch).
+        private static string FormatDriverVersion(uint vendorId, uint v) => vendorId switch
+        {
+            0x10DE => $"{v >> 22}.{(v >> 14) & 0xFF}.{(v >> 6) & 0xFF}.{v & 0x3F}",
+            0x8086 when OperatingSystem.IsWindows() => $"{v >> 14}.{v & 0x3FFF}",
+            _ => $"{v >> 22}.{(v >> 12) & 0x3FF}.{v & 0xFFF}",
+        };
+
+        private static string FormatApiVersion(uint v) => $"{v >> 22}.{(v >> 12) & 0x3FF}.{v & 0xFFF}";
+
+        /// <summary>
+        /// Gets the description of this adapter.
+        /// </summary>
+        /// <value>The description.</value>
+        public unsafe string Description
+        {
+            get
+            {
+                // TODO VULKAN api
+                var propertiesCopy = properties;
+
+                var description = Marshal.PtrToStringAnsi((IntPtr)propertiesCopy.deviceName);
+                if (VendorNames.TryGetValue(VendorId, out var vendorName))
+                    description = $"{vendorName} {description}";
+
+                return description;
+            }
+        }
+
+        /// <summary>
+        /// Gets or sets the vendor identifier.
+        /// </summary>
+        /// <value>
+        /// The vendor identifier.
+        /// </value>
+        public int VendorId
+        {
+            get
+            {
+                return (int)properties.vendorID;
+            }
+        }
+
+        /// <summary>
+        /// Determines if this instance of GraphicsAdapter is the default adapter.
+        /// </summary>
+        public bool IsDefaultAdapter
+        {
+            get
+            {
+                return adapterOrdinal == 0;
+            }
+        }
+
+        /// <summary>
+        ///   Gets a value indicating whether this adapter is a software rasterizer (llvmpipe,
+        ///   SwiftShader) rather than a physical GPU.
+        /// </summary>
+        public bool IsSoftwareAdapter => properties.deviceType == VkPhysicalDeviceType.Cpu;
+
+        internal unsafe VkPhysicalDevice GetPhysicalDevice(bool enableValidation)
+        {
+            if (enableValidation)
+            {
+                if (debugPhysicalDevice == VkPhysicalDevice.Null)
+                {
+                    GraphicsAdapterFactoryInstance defaultInstance = GraphicsAdapterFactory.GetInstance(true);
+                    uint physicalDevicesCount = 0;
+                    defaultInstance.NativeInstanceApi.vkEnumeratePhysicalDevices(defaultInstance.NativeInstance, &physicalDevicesCount, null).CheckResult();
+
+                    Span<VkPhysicalDevice> nativePhysicalDevices = stackalloc VkPhysicalDevice[(int)physicalDevicesCount];
+                    defaultInstance.NativeInstanceApi.vkEnumeratePhysicalDevices(defaultInstance.NativeInstance, nativePhysicalDevices).CheckResult();
+
+                    debugPhysicalDevice = nativePhysicalDevices[enumerationIndex];
+                }
+
+                return debugPhysicalDevice;
+            }
+            else
+            {
+                return defaultPhysicalDevice;
+            }
+        }
+
+        /// <summary>
+        /// Tests to see if the adapter supports the requested profile.
+        /// </summary>
+        /// <param name="graphicsProfile">The graphics profile.</param>
+        /// <returns>true if the profile is supported</returns>
+        public bool IsProfileSupported(GraphicsProfile graphicsProfile)
+        {
+            // TODO VULKAN
+            return true;
+            //return SharpDX.Direct3D11.Device.IsSupportedFeatureLevel(this.NativeAdapter, (SharpDX.Direct3D.FeatureLevel)graphicsProfile);
+        }
+    }
+}
+
+#endif

@@ -1,0 +1,29 @@
+<Project>
+  <Import Project="$([MSBuild]::GetDirectoryNameOfFileAbove($(MSBuildProjectDirectory), 'Directory.Build.props'))/sdk/Stride.Build.Sdk.Editor/Sdk/Sdk.props" />
+  <PropertyGroup>
+    <StrideAssemblyProcessor>false</StrideAssemblyProcessor>
+    <OutputType>Library</OutputType>
+    <TargetFramework>$(StrideXplatEditorTargetFramework)</TargetFramework>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\..\shared\ConsoleProgram.cs">
+      <Link>Frontend\Console\ConsoleProgram.cs</Link>
+    </Compile>
+    <Compile Remove="Frontend\TexArray.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <StrideNativeLib Include="$(MSBuildThisFileDirectory)..\..\..\deps\TextureWrappers\Release\**\*.dll;$(MSBuildThisFileDirectory)..\..\..\deps\TextureWrappers\Release\**\*.so;$(MSBuildThisFileDirectory)..\..\..\deps\TextureWrappers\Release\**\*.dylib">
+      <Link>runtimes\%(RecursiveDir)native\%(Filename)%(Extension)</Link>
+    </StrideNativeLib>
+    <StrideNativeLib Include="$(MSBuildThisFileDirectory)..\..\..\deps\astcenc\dotnet\**\*.dll;$(MSBuildThisFileDirectory)..\..\..\deps\astcenc\dotnet\**\*.so;$(MSBuildThisFileDirectory)..\..\..\deps\astcenc\dotnet\**\*.dylib">
+      <Link>runtimes\%(RecursiveDir)native\%(Filename)%(Extension)</Link>
+    </StrideNativeLib>
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="SixLabors.ImageSharp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\engine\Stride.Graphics\Stride.Graphics.csproj" />
+  </ItemGroup>
+  <Import Project="$(StrideRoot)sources/sdk/Stride.Build.Sdk.Editor/Sdk/Sdk.targets" />
+</Project>

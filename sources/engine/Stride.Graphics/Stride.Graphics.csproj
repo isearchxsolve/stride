@@ -1,0 +1,160 @@
+<Project>
+  <Import Project="$([MSBuild]::GetDirectoryNameOfFileAbove($(MSBuildProjectDirectory), 'Directory.Build.props'))/sdk/Stride.Build.Sdk/Sdk/Sdk.props" />
+  <PropertyGroup>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <TargetFrameworks>$(StrideRuntimeTargetFrameworksMacOS)</TargetFrameworks>
+    <StrideGraphicsApiDependent>true</StrideGraphicsApiDependent>
+    <StrideAssemblyProcessor>true</StrideAssemblyProcessor>
+    <StridePackAssets>true</StridePackAssets>
+    <StrideContainsAssetTypes>true</StrideContainsAssetTypes>
+    <DefineConstants>$(DefineConstants);STRIDE_GRAPHICS_NO_DESCRIPTOR_COPIES</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup Condition=" '$(StrideGraphicsApi)' == 'Vulkan' ">
+    <StrideNativeLib Include="..\..\..\deps\MoltenVK\$(StridePlatformDeps)\**\*.*">
+      <Link>runtimes\%(RecursiveDir)native\%(Filename)%(Extension)</Link>
+      <RelativePath>runtimes\%(RecursiveDir)native\%(Filename)%(Extension)</RelativePath>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </StrideNativeLib>
+  </ItemGroup>
+  <ItemGroup>
+    <StrideNativeLib Include="..\..\..\deps\freetype\$(StridePlatformDeps)\**\*.*">
+      <Link>runtimes\%(RecursiveDir)native\%(Filename)%(Extension)</Link>
+      <RelativePath>runtimes\%(RecursiveDir)native\%(Filename)%(Extension)</RelativePath>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </StrideNativeLib>
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="..\..\shared\SharedAssemblyInfo.cs">
+      <Link>Properties\SharedAssemblyInfo.cs</Link>
+    </Compile>
+    <None Include="build\**\*.targets" PackagePath="build\" Pack="true" />
+    <None Include="build\**\*.targets" PackagePath="buildTransitive\" Pack="true" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\core\Stride.Core.Tasks\Stride.Core.Tasks.csproj">
+      <Private>false</Private>
+      <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+      <GlobalPropertiesToRemove>TargetFramework;StrideGraphicsApi</GlobalPropertiesToRemove>
+      <SkipGetTargetFrameworkProperties>true</SkipGetTargetFrameworkProperties>
+    </ProjectReference>
+    <ProjectReference Include="..\..\shaders\Stride.Shaders.Effects\Stride.Shaders.Effects.csproj" />
+    <ProjectReference Include="..\Stride.Foundation\Stride.Foundation.csproj" />
+    <PackageReference Include="WinPixEventRuntime" Condition="'$(TargetFramework)' == '$(StrideFramework)'" />
+    <!-- PrivateAssets="compile": native bindings stay out of consumer compile graphs (analyzer perf);
+         consumers calling GraphicsMarshal interop add their own PackageReference. -->
+    <PackageReference Include="Vortice.Vulkan" Condition="'$(TargetFramework)' == '$(StrideFramework)' Or '$(TargetFramework)' == '$(StrideFrameworkAndroid)' Or '$(TargetFramework)' == '$(StrideFrameworkiOS)' Or '$(TargetFramework)' == '$(StrideFrameworkmacOS)'" PrivateAssets="compile" />
+    <PackageReference Include="Silk.NET.Direct3D11" Condition="'$(TargetFramework)' == '$(StrideFramework)' Or '$(TargetFramework)' == '$(StrideFrameworkUWP)'" PrivateAssets="compile" />
+    <PackageReference Include="Silk.NET.Direct3D12" Condition="'$(TargetFramework)' == '$(StrideFramework)' Or '$(TargetFramework)' == '$(StrideFrameworkUWP)'" PrivateAssets="compile" />
+    <PackageReference Include="Silk.NET.Direct3D.Compilers" Condition="'$(TargetFramework)' == '$(StrideFramework)' Or '$(TargetFramework)' == '$(StrideFrameworkUWP)'" PrivateAssets="compile" />
+    <PackageReference Include="Silk.NET.Sdl" PrivateAssets="compile" />
+    <PackageReference Include="Silk.NET.DXGI" Condition="'$(TargetFramework)' == '$(StrideFramework)'" PrivateAssets="compile" />
+    <!-- D3D12 Agility SDK: native-only package, copied by build\Stride.Graphics.targets (and the StrideNativeLib below for engine builds) -->
+    <PackageReference Include="Microsoft.Direct3D.D3D12" Condition="'$(TargetFramework)' == '$(StrideFramework)'" GeneratePathProperty="true" />
+    <PackageReference Include="Silk.NET.Windowing.Sdl" Condition="'$(TargetFramework)' == '$(StrideFrameworkAndroid)'" PrivateAssets="compile" />
+  </ItemGroup>
+  <Choose>
+    <When Condition=" '$(TargetFramework)' == '$(StrideFramework)' And '$(StrideGraphicsApi)' == 'Direct3D12' ">
+      <ItemGroup>
+        <StrideNativeLib Include="$(NuGetPackageRoot)\winpixeventruntime\1.0.240308001\bin\x64\WinPixEventRuntime.dll">
+          <Link>runtimes\win-x64\native\%(Filename)%(Extension)</Link>
+          <RelativePath>runtimes\win-x64\native\%(Filename)%(Extension)</RelativePath>
+          <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+        </StrideNativeLib>
+        <!-- Loaded by D3D12Runtime from D3D12\ next to Stride.Graphics.dll. Not packed: NuGet consumers get them from the package -->
+        <StrideNativeLib Include="$(PkgMicrosoft_Direct3D_D3D12)\build\native\bin\x64\D3D12Core.dll">
+          <Link>D3D12\D3D12Core.dll</Link>
+          <RelativePath>D3D12\D3D12Core.dll</RelativePath>
+          <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+          <Pack>false</Pack>
+        </StrideNativeLib>
+        <StrideNativeLib Include="$(PkgMicrosoft_Direct3D_D3D12)\build\native\bin\x64\d3d12SDKLayers.dll">
+          <Link>D3D12\D3D12SDKLayers.dll</Link>
+          <RelativePath>D3D12\D3D12SDKLayers.dll</RelativePath>
+          <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+          <Pack>false</Pack>
+        </StrideNativeLib>
+      </ItemGroup>
+    </When>
+  </Choose>
+
+  <ItemGroup>
+    <EmbeddedResource Update="FrameworkResources.resx">
+      <Generator>ResXFileCodeGenerator</Generator>
+      <LastGenOutput>FrameworkResources.Designer.cs</LastGenOutput>
+      <SubType>Designer</SubType>
+    </EmbeddedResource>
+  </ItemGroup>
+
+  <!-- The bytecodes under Shaders.Bytecodes / Shaders093.Bytecodes (listed in their EmbeddedEffects.yaml) are generated by
+       Stride.Shaders.Tests (EmbeddedEffectTests) and checked in. EffectBytecode.FromStream rejects a bytecode whose magic
+       header is not the current one, so a header bump without a regeneration only fails at runtime, on the first
+       SpriteBatch/UIEffect/font draw. Compare the headers at build time instead. Stride.Shaders.Tests references this
+       project, so the command that regenerates them builds it with StrideSkipPrecompiledBytecodeCheck. -->
+  <UsingTask TaskName="StrideCheckPrecompiledBytecodes"
+             TaskFactory="RoslynCodeTaskFactory"
+             AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
+    <ParameterGroup>
+      <EffectBytecodeSource Required="true" />
+      <BytecodeFiles ParameterType="Microsoft.Build.Framework.ITaskItem[]" Required="true" />
+      <StaleFiles ParameterType="System.String" Output="true" />
+      <ExpectedHeader ParameterType="System.String" Output="true" />
+    </ParameterGroup>
+    <Task>
+      <Using Namespace="System" />
+      <Using Namespace="System.Collections.Generic" />
+      <Using Namespace="System.Globalization" />
+      <Using Namespace="System.IO" />
+      <Using Namespace="System.Text.RegularExpressions" />
+      <Code Type="Fragment" Language="cs"><![CDATA[
+        StaleFiles = string.Empty;
+        ExpectedHeader = string.Empty;
+
+        // MagicHeader is a hex uint literal in EffectBytecode.cs; the bytecode files hold it as the
+        // first four decimal bytes of their array (little-endian, as BinarySerializationWriter wrote it).
+        var headerMatch = Regex.Match(File.ReadAllText(EffectBytecodeSource), @"MagicHeader\s*=\s*0x([0-9A-Fa-f]{8})");
+        if (!headerMatch.Success)
+            return true;
+
+        var magic = uint.Parse(headerMatch.Groups[1].Value, NumberStyles.HexNumber, CultureInfo.InvariantCulture);
+        ExpectedHeader = "0x" + magic.ToString("X8", CultureInfo.InvariantCulture);
+        var expected = string.Format(CultureInfo.InvariantCulture, "{0}, {1}, {2}, {3}",
+            magic & 0xFF, (magic >> 8) & 0xFF, (magic >> 16) & 0xFF, (magic >> 24) & 0xFF);
+
+        var stale = new List<string>();
+        foreach (var file in BytecodeFiles)
+        {
+            var path = file.GetMetadata("FullPath");
+            if (!File.Exists(path))
+                continue;
+
+            // The first line of the byte array, if any: an API the effect was not compiled for
+            // (Null) writes an empty array, which carries no header and is not stale.
+            var arrayMatch = Regex.Match(File.ReadAllText(path), @"new byte\[\]\s*\{\s*(\d+,\s*\d+,\s*\d+,\s*\d+)");
+            if (!arrayMatch.Success)
+                continue;
+
+            var actual = Regex.Replace(arrayMatch.Groups[1].Value, @"\s+", " ");
+            if (!string.Equals(actual, expected, StringComparison.Ordinal))
+                stale.Add(Path.GetFileName(path));
+        }
+
+        StaleFiles = string.Join(", ", stale);
+      ]]></Code>
+    </Task>
+  </UsingTask>
+
+  <Target Name="StrideCheckPrecompiledBytecodes" BeforeTargets="CoreCompile" Condition="'$(DesignTimeBuild)' != 'true' and '$(StrideSkipPrecompiledBytecodeCheck)' != 'true'">
+    <ItemGroup>
+      <_StridePrecompiledBytecode Include="$(MSBuildProjectDirectory)\Shaders.Bytecodes\*.bytecode*.cs;$(MSBuildProjectDirectory)\Shaders093.Bytecodes\*Bytecode.*.cs" />
+    </ItemGroup>
+    <StrideCheckPrecompiledBytecodes EffectBytecodeSource="$(StrideRoot)sources\shaders\Stride.Shaders.Effects\EffectBytecode.cs"
+                                     BytecodeFiles="@(_StridePrecompiledBytecode)">
+      <Output TaskParameter="StaleFiles" PropertyName="_StrideStaleBytecodes" />
+      <Output TaskParameter="ExpectedHeader" PropertyName="_StrideExpectedBytecodeHeader" />
+    </StrideCheckPrecompiledBytecodes>
+    <Error Condition="'$(_StrideStaleBytecodes)' != ''"
+           Text="Precompiled shader bytecodes predate EffectBytecode.MagicHeader $(_StrideExpectedBytecodeHeader) and would fail to load at runtime: $(_StrideStaleBytecodes). Regenerate them: dotnet test sources/shaders/Stride.Shaders.Tests -p:StrideSkipPrecompiledBytecodeCheck=true --filter &quot;FullyQualifiedName~EmbeddedEffectTests.UpdateEmbeddedEffects&quot; -- xUnit.Explicit=on" />
+  </Target>
+
+  <Import Project="$(StrideRoot)sources/sdk/Stride.Build.Sdk/Sdk/Sdk.targets" />
+</Project>

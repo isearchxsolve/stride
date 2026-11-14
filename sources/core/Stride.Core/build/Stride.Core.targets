@@ -1,0 +1,181 @@
+<Project InitialTargets="_StrideCheckVisualCRuntime" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!-- Check the Visual C++ Runtime needed by Stride's native libraries is installed -->
+  <Target Name="_StrideCheckVisualCRuntime" Condition="'$(MSBuildRuntimeType)' == 'Full'">
+    <PropertyGroup>
+      <IsWindowsARM64 Condition="$([MSBuild]::IsOsPlatform('Windows')) And $([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture) == ARM64">true</IsWindowsARM64>
+    </PropertyGroup>
+
+    <ItemGroup Condition="'$(IsWindowsARM64)' != 'true'">
+      <_StrideVisualCRuntime Include="Visual C++ Redistributable (x64)">
+        <Version>$([MSBuild]::GetRegistryValueFromView('HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\DevDiv\VC\Servicing\14.0\RuntimeMinimum', 'Version', null, RegistryView.Registry64))</Version>
+        <ExpectedVersion>14.22.27821</ExpectedVersion>
+        <DownloadUrl>https://aka.ms/vs/17/release/vc_redist.x64.exe</DownloadUrl>
+      </_StrideVisualCRuntime>
+    </ItemGroup>
+
+    <ItemGroup Condition="'$(IsWindowsARM64)' == 'true'">
+      <_StrideVisualCRuntime Include="Visual C++ Redistributable (ARM64)">
+        <Version>$([MSBuild]::GetRegistryValueFromView('HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\DevDiv\VC\Servicing\14.0\Runtime_arm64', 'Version', null, RegistryView.Registry64))</Version>
+        <ExpectedVersion>14.42.34433</ExpectedVersion>
+        <DownloadUrl>https://aka.ms/vs/17/release/vc_redist.arm64.exe</DownloadUrl>
+      </_StrideVisualCRuntime>
+    </ItemGroup>
+
+    <ItemGroup>
+      <_StrideVisualCRuntimeNotInstalled Include="@(_StrideVisualCRuntime)" Condition="'%(_StrideVisualCRuntime.Version)' == '' Or $([System.Version]::Parse('%(Version)').CompareTo($([System.Version]::Parse('%(_StrideVisualCRuntime.ExpectedVersion)')))) &lt; 0" />
+    </ItemGroup>
+
+    <Error Condition="'@(_StrideVisualCRuntimeNotInstalled)' != ''" Text="@(_StrideVisualCRuntimeNotInstalled->'%(Identity) is not installed. Please download from %(DownloadUrl)', '%0a')"/>
+  </Target>
+  
+  <!-- 
+  *****************************************************************************************************************************
+  Platform Detection
+  *****************************************************************************************************************************
+  -->
+  <PropertyGroup>
+    <!-- Default mappings -->
+    <StridePlatform Condition="'$(StridePlatform)' == '' And '$(TargetPlatformIdentifier)' == 'Windows'">Windows</StridePlatform>
+    <StridePlatform Condition="'$(StridePlatform)' == '' And '$(TargetPlatformIdentifier)' == 'macOS'">macOS</StridePlatform>
+    <StridePlatform Condition="'$(StridePlatform)' == '' And '$(TargetPlatformIdentifier)' == 'UAP'">UWP</StridePlatform>
+    <StridePlatform Condition="'$(StridePlatform)' == '' And '$(TargetPlatformIdentifier)' == 'Android'">Android</StridePlatform>
+    <StridePlatform Condition="'$(StridePlatform)' == '' And '$(TargetPlatformIdentifier)' == 'iOS'">iOS</StridePlatform>
+    <StridePlatform Condition="'$(StridePlatform)' == '' And $(RuntimeIdentifier.StartsWith('osx'))">macOS</StridePlatform>
+    <StridePlatform Condition="'$(StridePlatform)' == '' And $(RuntimeIdentifier.StartsWith('linux'))">Linux</StridePlatform>
+    <StridePlatform Condition="'$(StridePlatform)' == ''">Windows</StridePlatform>
+  </PropertyGroup>
+
+  <!-- 
+  *****************************************************************************************************************************
+  Assembly Processor
+  *****************************************************************************************************************************
+  -->
+
+  <!-- Multi-OS Compatibility Properties -->
+  <PropertyGroup>
+    <TEMP>$([System.IO.Path]::GetTempPath())</TEMP>
+  </PropertyGroup>
+  
+  <PropertyGroup>
+    <!--By default, turn on assembly processor-->
+    <StrideAssemblyProcessor Condition="'$(StrideAssemblyProcessor)' == ''">true</StrideAssemblyProcessor>
+    <StrideAssemblyProcessorFramework>netstandard2.0</StrideAssemblyProcessorFramework>
+    <StrideAssemblyProcessorExt>.dll</StrideAssemblyProcessorExt>
+    <!-- $(StrideRoot) anchors both in-tree consumers (set by sources/Directory.Build.props)
+         and dev-redirect consumers (seeded from $(StrideDevRoot) by build/<PkgId>.props
+         stubs written by build/dev-packages.cs). NuGet-only consumers fall back to
+         the tools/ copy shipped in the package. -->
+    <StrideAssemblyProcessorBasePath Condition="'$(StrideRoot)' != ''">$(StrideRoot)deps\AssemblyProcessor\$(StrideAssemblyProcessorFramework)\</StrideAssemblyProcessorBasePath>
+    <StrideAssemblyProcessorBasePath Condition="'$(StrideAssemblyProcessorBasePath)' == ''">$(MSBuildThisFileDirectory)..\tools\AssemblyProcessor\$(StrideAssemblyProcessorFramework)\</StrideAssemblyProcessorBasePath>
+    <StrideAssemblyProcessorPath>$(StrideAssemblyProcessorBasePath)Stride.Core.AssemblyProcessor$(StrideAssemblyProcessorExt)</StrideAssemblyProcessorPath>
+    <StrideAssemblyProcessorSerializationHashFile>$(IntermediateOutputPath)$(TargetName).sdserializationhash</StrideAssemblyProcessorSerializationHashFile>
+    
+    <StrideAssemblyProcessorHash>$([System.IO.File]::ReadAllText('$(StrideAssemblyProcessorPath).hash'))</StrideAssemblyProcessorHash>
+    <StrideAssemblyProcessorTempBasePath>$(TEMP)\stride\AssemblyProcessor\$(StrideAssemblyProcessorFramework)\$(StrideAssemblyProcessorHash)\</StrideAssemblyProcessorTempBasePath>
+    <StrideAssemblyProcessorTempPath>$(StrideAssemblyProcessorTempBasePath)Stride.Core.AssemblyProcessor$(StrideAssemblyProcessorExt)</StrideAssemblyProcessorTempPath>
+  </PropertyGroup>
+  <UsingTask TaskName="AssemblyProcessorTask" AssemblyFile="$(StrideAssemblyProcessorTempPath)" Condition=" '$(StrideAssemblyProcessorTempPath)' != '' And '$(StrideAssemblyProcessorDev)' != 'true' "/>
+  <Target Name="StrideRunAssemblyProcessor" DependsOnTargets="ResolveAssemblyReferences">
+    <WriteLinesToFile File="$(IntermediateOutputPath)StrideReferences.cache" Lines="@(ReferencePath)" Overwrite="true" />
+    <ItemGroup>
+      <!-- We want list of references coming from direct and explicit PackageReference. We are using metadata to combine ReferencePath and PackageReference items https://stackoverflow.com/a/18032552 -->
+      <StrideAddReference Include="@(ReferencePath)" Condition="'%(PackageReference.IsImplicitlyDefined)' != 'true'">
+        <NuGetPackageReference>%(PackageReference.Identity)</NuGetPackageReference>
+      </StrideAddReference>
+      <StrideAddReference Remove="@(StrideAddReference)" Condition="'%(StrideAddReference.NuGetPackageId)' != '%(StrideAddReference.NuGetPackageReference)' Or ('%(StrideAddReference.ExternallyResolved)' != 'true' And '%(StrideAddReference.BuildReference)' != 'true')"/>
+      <!-- Also include non-nuget references (Reference and ProjectReference) -->
+      <StrideAddReference Include="@(ReferencePath)" Condition="'%(ReferencePath.NuGetPackageId)' == ''"/>
+    </ItemGroup>
+    <PropertyGroup>
+      <StrideAssemblyProcessorOptions Condition="'$(StrideAssemblyProcessorOptions)' == ''">--parameter-key --auto-module-initializer --serialization</StrideAssemblyProcessorOptions>
+      <!-- Physics, Particles and SpriteStudio assembly is actually hard coded/referenced here, remove once a better system is in place! -->
+      <!-- Please keep in sync with AssemblyRecompiler.cs -->
+      <StrideAssemblyProcessorOptions>$(StrideAssemblyProcessorOptions) @(StrideAddReference->'--add-reference=%22%(Identity)%22',' ')</StrideAssemblyProcessorOptions>
+      <StrideAssemblyProcessorOptions>$(StrideAssemblyProcessorOptions) --references-file="$(IntermediateOutputPath)StrideReferences.cache"</StrideAssemblyProcessorOptions>
+      <StrideAssemblyProcessorOptions>$(StrideAssemblyProcessorOptions) --platform=$(StridePlatform) "$(IntermediateOutputPath)$(TargetName)$(TargetExt)"</StrideAssemblyProcessorOptions>
+      <StrideAssemblyProcessorOptions Condition="'$(AssemblyOriginatorKeyFile)' != ''">$(StrideAssemblyProcessorOptions) --delete-output-on-error</StrideAssemblyProcessorOptions>
+    </PropertyGroup>
+
+    <!-- Copy task to temp directory (otherwise MSBuild lock the task file and we can't reinstall package in dev mode) -->
+    <ItemGroup>
+      <StrideAssemblyProcessorFilesToCopy Include="$(StrideAssemblyProcessorBasePath)*.*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(StrideAssemblyProcessorFilesToCopy)" DestinationFolder="$(StrideAssemblyProcessorTempBasePath)" Condition="!Exists('$(StrideAssemblyProcessorTempPath)')" />
+
+    <!-- Run assembly processor -->
+    <Message Condition=" '$(StrideAssemblyProcessorDev)' != 'true' " Importance="low" Text="&quot;$(StrideAssemblyProcessorTempPath)&quot; $(StrideAssemblyProcessorOptions)"/>
+    <AssemblyProcessorTask Condition=" '$(StrideAssemblyProcessorDev)' != 'true' " Arguments="$(StrideAssemblyProcessorOptions)"/>
+    <!-- Dev mode: don't use task to avoid locking the file -->
+    <Exec Condition=" '$(StrideAssemblyProcessorDev)' == 'true' " Command="&quot;$(StrideAssemblyProcessorTempPath)&quot; $(StrideAssemblyProcessorOptions)"/>
+  </Target>
+  <PropertyGroup Condition=" '$(StrideAssemblyProcessor)' == 'true'">
+    <PrepareForRunDependsOn>
+      StrideRunAssemblyProcessor;
+      $(PrepareForRunDependsOn)
+    </PrepareForRunDependsOn>
+  </PropertyGroup>
+
+  <!-- 
+  *****************************************************************************************************************************
+  NuGet tweaks
+  *****************************************************************************************************************************
+  -->
+  <!-- Workaround to copy .xml and .pdb files for new csproj targeting (https://github.com/dotnet/sdk/issues/1458#issuecomment-401497095) -->
+  <Target Name="_StrideResolveCopyLocalNuGetPackagePdbsAndXml"
+           Condition="$(CopyLocalLockFileAssemblies) == true"
+           AfterTargets="ResolveReferences">
+    <ItemGroup>
+      <ReferenceCopyLocalPaths
+        Include="@(ReferenceCopyLocalPaths->'%(RootDir)%(Directory)%(Filename).pdb')"
+        Condition="'%(ReferenceCopyLocalPaths.NuGetPackageId)' != ''
+                    and Exists('%(RootDir)%(Directory)%(Filename).pdb')" />
+      <ReferenceCopyLocalPaths
+        Include="@(ReferenceCopyLocalPaths->'%(RootDir)%(Directory)%(Filename).xml')"
+        Condition="'%(ReferenceCopyLocalPaths.NuGetPackageId)' != ''
+                    and Exists('%(RootDir)%(Directory)%(Filename).xml')" />
+    </ItemGroup>
+  </Target>
+  
+  <!-- Dependencies reading (from .ssdeps): discover .ssdeps files alongside referenced
+       assemblies. The parse + native-lib wiring lives in Stride.Core.NativeLibraries.targets
+       (imported at the bottom) so the NuGet PackageReference path here and the engine
+       self-build path in Stride.Build.Sdk's Stride.Dependencies.targets share one impl. -->
+  <PropertyGroup>
+    <_StrideListDepsFilesDependsOn>ResolveAssemblyReferences</_StrideListDepsFilesDependsOn>
+    <_StrideListDepsFilesDependsOn Condition="'$(StridePlatform)' == 'Windows' Or '$(StridePlatform)' == 'Linux' Or '$(StridePlatform)' == 'macOS'">$(_StrideListDepsFilesDependsOn);ResolvePackageAssets</_StrideListDepsFilesDependsOn>
+  </PropertyGroup>
+  <Target Name="_StrideListDepsFiles" DependsOnTargets="$(_StrideListDepsFilesDependsOn)">
+    <ItemGroup>
+      <_StrideDepsFile Include="@(ReferencePath->'%(RootDir)%(Directory)%(Filename).ssdeps')" Condition="'%(ReferencePath.CopyLocal)' != 'false' And Exists('%(RootDir)%(Directory)%(Filename).ssdeps')"/>
+      <_StrideDepsFile Include="@(ReferenceDependencyPaths->'%(RootDir)%(Directory)%(Filename).ssdeps')" Condition="'%(ReferenceDependencyPaths.CopyLocal)' != 'false' And Exists('%(RootDir)%(Directory)%(Filename).ssdeps')"/>
+      <_StrideDepsFile Include="@(RuntimeCopyLocalItems->'%(RootDir)%(Directory)%(Filename).ssdeps')" Condition="Exists('%(RootDir)%(Directory)%(Filename).ssdeps')"/>
+      <_StrideDepsFile Include="@(ReferenceCopyLocalPaths->'%(RootDir)%(Directory)%(Filename).ssdeps')" Condition="Exists('%(RootDir)%(Directory)%(Filename).ssdeps')"/>
+      <!-- Android -->
+      <_StrideDepsFile Include="@(_ReferencesFromNuGetPackages->'%(RootDir)%(Directory)%(Filename).ssdeps')" Condition="Exists('%(RootDir)%(Directory)%(Filename).ssdeps')"/>
+      <None Include="@(_StrideDepsFile)" CopyToOutputDirectory="PreserveNewest" PublishFolderType="None" />
+    </ItemGroup>
+  </Target>
+
+  <Import Project="$(MSBuildThisFileDirectory)Stride.Core.NativeLibraries.targets" />
+  <Import Project="$(MSBuildThisFileDirectory)Stride.Core.UserDocumentation.targets" />
+  <Import Project="$(MSBuildThisFileDirectory)Stride.AssetBuildManifest.targets" Condition="'$(StrideAssetBuildManifestImported)' == ''" />
+  <PropertyGroup>
+    <StrideAssetBuildManifestImported>true</StrideAssetBuildManifestImported>
+  </PropertyGroup>
+
+  <!-- Strip publish globals from ProjectReferences on iOS exes: PublishAot in the iOS .csproj
+       must not propagate to cross-platform library refs or they fail NETSDK1203. Set as static
+       metadata (not inside a target) so it applies in BOTH restore and build phases — restore
+       has its own P2P graph traversal that runs before our targets do. UndefineProperties on
+       the item works for SDK-propagated AdditionalProperties but NOT for command-line globals —
+       users passing -p:PublishAot=true on the CLI will still fail (set it in the csproj instead). -->
+  <ItemGroup Condition="'$(TargetPlatformIdentifier)' == 'iOS'">
+    <ProjectReference Update="@(ProjectReference)"
+                      UndefineProperties="%(ProjectReference.UndefineProperties);PublishAot;PublishTrimmed;PublishReadyToRun;PublishSingleFile;SelfContained" />
+  </ItemGroup>
+
+  <!-- Override macios _PrePublish to allow iossimulator publish: https://github.com/dotnet/macios/issues/25648 -->
+  <PropertyGroup Condition="'$(TargetPlatformIdentifier)' == 'iOS'">
+    <AfterMicrosoftNETSdkTargets>$(AfterMicrosoftNETSdkTargets);$(MSBuildThisFileDirectory)Stride.Core.iOSPublishOverride.targets</AfterMicrosoftNETSdkTargets>
+  </PropertyGroup>
+</Project>

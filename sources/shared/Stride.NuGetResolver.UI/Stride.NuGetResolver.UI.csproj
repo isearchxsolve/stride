@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <StrideBuildTags>WindowsTools</StrideBuildTags>
+    <DefineConstants>STRIDE_NUGET_RESOLVER_UI;$(DefineConstants)</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\Stride.NuGetResolver\NuGetAssemblyResolver.cs" Link="NuGetAssemblyResolver.cs" />
+    <Compile Include="..\Stride.NuGetResolver\RestoreHelper.cs" Link="RestoreHelper.cs" />
+    <Compile Include="..\Stride.NuGetResolver\NuGetResolverCache.cs" Link="NuGetResolverCache.cs" />
+    <Compile Include="..\Stride.NuGetResolver\GraphicsApiSelector.cs" Link="GraphicsApiSelector.cs" />
+    <Compile Include="..\Stride.NuGetResolver\GraphicsApiHostResolver.cs" Link="GraphicsApiHostResolver.cs" />
+    <Compile Include="..\Stride.NuGetResolver\DotNetHostSelector.cs" Link="DotNetHostSelector.cs" />
+    <Compile Include="..\Stride.NuGetResolver\ProjectVersionReader.cs" Link="ProjectVersionReader.cs" />
+    <Compile Include="..\Stride.NuGetResolver\HostInstanceMutex.cs" Link="HostInstanceMutex.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="NuGet.Protocol" />
+    <PackageReference Include="NuGet.Commands" />
+    <PackageReference Include="Avalonia.Desktop" PrivateAssets="all" />
+    <PackageReference Include="Avalonia.Themes.Fluent" PrivateAssets="all" />
+  </ItemGroup>
+
+</Project>

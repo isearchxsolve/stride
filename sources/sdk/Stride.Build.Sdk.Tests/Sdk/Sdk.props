@@ -1,0 +1,172 @@
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <!-- ================================================================ -->
+  <!-- Import Base Stride SDK -->
+  <!-- ================================================================ -->
+  <Import Project="$(MSBuildThisFileDirectory)..\..\Stride.Build.Sdk.Editor\Sdk\Sdk.props" />
+
+  <!-- ================================================================ -->
+  <!-- Test Project Properties -->
+  <!-- ================================================================ -->
+  <PropertyGroup>
+    <!-- Mark as test project for dotnet test -->
+    <IsTestProject>true</IsTestProject>
+
+    <!-- Test projects don't need to produce NuGet packages. Local property only — do NOT
+         let it propagate to referenced projects (e.g. Stride.AssetCompiler), which
+         still need their own .nupkg in bin\packages\ for the test's AssetCompiler run. The
+         ProjectReference metadata below adds this to GlobalPropertiesToRemove to be sure. -->
+    <StrideSkipAutoPack>true</StrideSkipAutoPack>
+
+    <!-- Tests are executables (for asset compilation, native libs, etc.) -->
+    <OutputType>WinExe</OutputType>
+    <StrideIsExecutable>true</StrideIsExecutable>
+    <!-- The test-only globals a suite can get (Stride.Tests.Combined passes them): its companion builds drop them, as
+         its project references do -->
+    <StrideCompanionBuildRemoveProperties>IncludeXunitLauncher;StrideTestPlatforms;StrideExplicitMacOSRuntime;StrideCompilerSkipBuild</StrideCompanionBuildRemoveProperties>
+
+    <!-- Custom output paths for test projects -->
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <AppendRuntimeIdentifierToOutputPath>false</AppendRuntimeIdentifierToOutputPath>
+    <BaseIntermediateOutputPath>obj\</BaseIntermediateOutputPath>
+
+    <!-- Set RuntimeIdentifier from StrideTestRuntimeIdentifier to avoid NETSDK1134
+         (cannot pass -r or RuntimeIdentifier at solution level in .NET 10+) -->
+    <RuntimeIdentifier Condition="'$(StrideTestRuntimeIdentifier)' != ''">$(StrideTestRuntimeIdentifier)</RuntimeIdentifier>
+    <SelfContained Condition="'$(StrideTestRuntimeIdentifier)' != ''">false</SelfContained>
+
+    <!-- Allow unsafe code (common in tests) -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+
+    <!-- Enable assembly processor for test projects -->
+    <StrideAssemblyProcessor>true</StrideAssemblyProcessor>
+
+    <!-- Microsoft.NET.Test.Sdk ships Microsoft.CodeCoverage.targets which injects
+         MsCoverageReferencedPathMaps BeforeTargets=CoreCompile. The target serially walks
+         every transitive ProjectReference (vstest#15295) and blocks CoreCompile until done,
+         throttling parallelism for the whole build. We don't collect coverage in CI. -->
+    <DisableMsCoverageReferencedPathMaps>true</DisableMsCoverageReferencedPathMaps>
+  </PropertyGroup>
+
+  <!-- Multi-platform tests set <StrideMultiPlatformTest>true</StrideMultiPlatformTest> BEFORE
+       this import to opt into multi-TFM. The flag (a) defaults StrideTestPlatforms from the
+       build's StridePlatforms (Stride.Local.props), and (b) suppresses the single-TFM
+       fallback below so the StrideTestTargetFrameworks sets computed next drive the csproj's
+       <TargetFrameworks>. CLI -p:StrideTestPlatforms=… still overrides (global property). -->
+  <PropertyGroup Condition="'$(StrideMultiPlatformTest)' == 'true' And '$(StrideTestPlatforms)' == ''">
+    <StrideTestPlatforms>$(StridePlatforms)</StrideTestPlatforms>
+  </PropertyGroup>
+
+  <!-- Precomputed test framework sets a multi-platform test opts into directly in its csproj:
+       <TargetFrameworks>$(StrideTestTargetFrameworks)</TargetFrameworks>. Computed here (props)
+       from StrideTestPlatforms so the value is known when the csproj body evaluates and the
+       literal <TargetFrameworks> element lives in the csproj (keeps SDK-style detection working).
+       Two variants: a test consuming Stride.Runtime libs bound to Microsoft.macOS APIs
+       (AVFoundation/Metal) picks ...MacOS to add net10.0-macos instead of collapsing to the base.
+       Order/conditions mirror the per-platform expansion (Game host-shadow, host-windows when a
+       mobile platform is present on a Windows host, then mobile). -->
+  <PropertyGroup Condition="'$(StrideTestPlatforms)' != ''">
+    <StrideContainsAssetTypes Condition="'$(StrideContainsAssetTypes)' == ''">true</StrideContainsAssetTypes>
+    <_StrideTestPlatforms>;$(StrideTestPlatforms);</_StrideTestPlatforms>
+    <!-- Game = host-loadable library TFM; auto-add for mobile-only lists (a desktop platform
+         fills that role when present). Opt out with StrideContainsAssetTypes=false. -->
+    <_StrideTestPlatforms Condition="'$(StrideContainsAssetTypes)' != 'false' And ($(_StrideTestPlatforms.Contains(';Android;')) Or $(_StrideTestPlatforms.Contains(';iOS;'))) And !$(_StrideTestPlatforms.Contains(';Game;')) And !$(_StrideTestPlatforms.Contains(';Linux;')) And !$(_StrideTestPlatforms.Contains(';macOS;')) And !$(_StrideTestPlatforms.Contains(';Windows;'))">;Game$(_StrideTestPlatforms)</_StrideTestPlatforms>
+
+    <!-- shared tail: host-windows (when a mobile platform is present on a Windows host) + mobile -->
+    <_StrideTestTargetFrameworksTail></_StrideTestTargetFrameworksTail>
+    <_StrideTestTargetFrameworksTail Condition="$(_StrideTestPlatforms.Contains(';Windows;')) And '$([MSBuild]::IsOSPlatform(Windows))' == 'true' And ($(_StrideTestPlatforms.Contains(';Android;')) Or $(_StrideTestPlatforms.Contains(';iOS;')))">$(_StrideTestTargetFrameworksTail)$(StrideFrameworkWindows);</_StrideTestTargetFrameworksTail>
+    <_StrideTestTargetFrameworksTail Condition="$(_StrideTestPlatforms.Contains(';Android;'))">$(_StrideTestTargetFrameworksTail)$(StrideFrameworkAndroid);</_StrideTestTargetFrameworksTail>
+    <_StrideTestTargetFrameworksTail Condition="$(_StrideTestPlatforms.Contains(';iOS;'))">$(_StrideTestTargetFrameworksTail)$(StrideFrameworkiOS);</_StrideTestTargetFrameworksTail>
+
+    <!-- desktop base ($(StrideFramework)), excluding macOS -->
+    <_StrideTestDesktop Condition="$(_StrideTestPlatforms.Contains(';Linux;')) Or ($(_StrideTestPlatforms.Contains(';Windows;')) And !($(_StrideTestPlatforms.Contains(';Android;')) Or $(_StrideTestPlatforms.Contains(';iOS;')))) Or $(_StrideTestPlatforms.Contains(';Game;'))">$(StrideFramework);</_StrideTestDesktop>
+
+    <!-- base set: macOS (when present) runs on the shared desktop TFM (folded in if no other desktop) -->
+    <_StrideTestTargetFrameworksBase>$(_StrideTestDesktop)</_StrideTestTargetFrameworksBase>
+    <_StrideTestTargetFrameworksBase Condition="'$(_StrideTestTargetFrameworksBase)' == '' And $(_StrideTestPlatforms.Contains(';macOS;'))">$(StrideFramework);</_StrideTestTargetFrameworksBase>
+    <_StrideTestTargetFrameworksBase>$(_StrideTestTargetFrameworksBase)$(_StrideTestTargetFrameworksTail)</_StrideTestTargetFrameworksBase>
+    <StrideTestTargetFrameworks>$([MSBuild]::Unescape($(_StrideTestTargetFrameworksBase.TrimEnd(';'))))</StrideTestTargetFrameworks>
+
+    <!-- macOS variant: tests consuming Stride.Runtime macOS-native libs add net10.0-macos (last) -->
+    <_StrideTestTargetFrameworksMac>$(_StrideTestDesktop)$(_StrideTestTargetFrameworksTail)</_StrideTestTargetFrameworksMac>
+    <_StrideTestTargetFrameworksMac Condition="$(_StrideTestPlatforms.Contains(';macOS;'))">$(_StrideTestTargetFrameworksMac)$(StrideFrameworkmacOS);</_StrideTestTargetFrameworksMac>
+    <StrideTestTargetFrameworksMacOS>$([MSBuild]::Unescape($(_StrideTestTargetFrameworksMac.TrimEnd(';'))))</StrideTestTargetFrameworksMacOS>
+  </PropertyGroup>
+
+  <!-- Single-TFM fallback for tests that set neither TargetFramework nor TargetFrameworks
+       (e.g. Stride.Core.Assets.Quantum.Tests). Needed at props time because NuGet restore
+       fails NETSDK1013 otherwise. -->
+  <PropertyGroup Condition="'$(StrideMultiPlatformTest)' != 'true'">
+    <TargetFramework Condition="'$(TargetFramework)' == '' And '$(TargetFrameworks)' == ''">$(StrideXplatEditorTargetFramework)</TargetFramework>
+  </PropertyGroup>
+
+  <!-- ================================================================ -->
+  <!-- Graphics API Configuration for Tests -->
+  <!-- ================================================================ -->
+  <!-- StrideGraphicsApisTest (set in Stride.Local.props) overrides both list + singular so
+       tests pick the requested API even when Stride.Graphics.props has already set
+       StrideGraphicsApi from StridePlatform via the engine SDK import chain. -->
+  <PropertyGroup Condition="'$(StrideGraphicsApisTest)' != ''">
+    <StrideGraphicsApis>$(StrideGraphicsApisTest)</StrideGraphicsApis>
+    <StrideGraphicsApi>$(StrideGraphicsApisTest.Split(';', StringSplitOptions.RemoveEmptyEntries)[0])</StrideGraphicsApi>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <!-- Build list of Graphics API for platforms that support multiple -->
+    <StrideGraphicsApis Condition="'$(StridePlatform)' == 'Linux' And '$(StrideGraphicsApiDependentBuildAll)' == 'true'">Vulkan</StrideGraphicsApis>
+    <StrideGraphicsApis Condition="'$(StridePlatform)' == 'Linux' And '$(StrideGraphicsApis)' == ''">Vulkan</StrideGraphicsApis>
+    <StrideGraphicsApis Condition="'$(StridePlatform)' == 'Windows' And '$(StrideGraphicsApiDependentBuildAll)' == 'true'">Direct3D11;Direct3D12;Vulkan</StrideGraphicsApis>
+    <StrideGraphicsApis Condition="'$(StridePlatform)' == 'Windows' And '$(StrideGraphicsApis)' == ''">Direct3D11</StrideGraphicsApis>
+
+    <!-- Setup default GraphicsApi -->
+    <StrideGraphicsApi Condition="'$(StrideGraphicsApi)' == '' And '$(StrideGraphicsApis)' != ''">$(StrideGraphicsApis.Split(';', StringSplitOptions.RemoveEmptyEntries)[0])</StrideGraphicsApi>
+  </PropertyGroup>
+
+  <!-- ================================================================ -->
+  <!-- Test-Specific Output Paths -->
+  <!-- ================================================================ -->
+  <!-- Output path set in props so dotnet test can resolve the DLL. -->
+  <PropertyGroup>
+    <!-- OutputPath is set in Sdk.targets (before .NET SDK import) where $(AssemblyName) is available. -->
+
+    <IntermediateOutputPath Condition="'$(StrideGraphicsApi)' == ''">$(BaseIntermediateOutputPath)$(StridePlatform)\$(Configuration)\</IntermediateOutputPath>
+    <IntermediateOutputPath Condition="'$(StrideGraphicsApi)' != ''">$(BaseIntermediateOutputPath)$(StridePlatform)-$(StrideGraphicsApi)\$(Configuration)\</IntermediateOutputPath>
+  </PropertyGroup>
+
+  <!-- ================================================================ -->
+  <!-- Asset Compilation Settings -->
+  <!-- ================================================================ -->
+  <PropertyGroup>
+    <!-- Do not compile unit tests when packaging -->
+    <StrideCompilerTargetsEnable Condition="'$(StrideSkipUnitTests)' == 'true'">false</StrideCompilerTargetsEnable>
+    <StrideCompilerTargetsEnable Condition="'$(StridePackageBuild)' == 'true'">false</StrideCompilerTargetsEnable>
+
+    <!-- Asset compilation options for tests -->
+    <StrideCompileAssetOptions Condition="'$(StrideCompileAssetOptions)' == ''">--compile-property:BuildProjectReferences=false</StrideCompileAssetOptions>
+  </PropertyGroup>
+
+  <!-- ================================================================ -->
+  <!-- Android Manifest Defaults                                         -->
+  <!-- ================================================================ -->
+  <!-- Replaces the per-project Properties/AndroidManifest.xml. The .NET Android SDK
+       synthesizes a manifest from these properties when no file is supplied — same shape
+       as the minimal manifest tests previously shipped (single <application> + <uses-sdk>).
+       Per-Activity attributes (Theme, MainLauncher) come from [Activity] attributes on the
+       per-project MainActivity injected by Sdk.targets, not from the manifest.
+       ApplicationId must be a valid Java package name (lowercase, segments not starting
+       with a digit). The regex prefixes digit-starting segments with "api" so projects
+       like Stride.Graphics.Tests.10_0 get a valid id "stride.graphics.tests.api10_0". -->
+  <PropertyGroup>
+    <ApplicationId Condition="'$(ApplicationId)' == ''">$([System.Text.RegularExpressions.Regex]::Replace($(AssemblyName.ToLowerInvariant()), '\.(\d)', '.api$1'))</ApplicationId>
+    <ApplicationTitle Condition="'$(ApplicationTitle)' == ''">$(AssemblyName)</ApplicationTitle>
+    <ApplicationVersion Condition="'$(ApplicationVersion)' == ''">1</ApplicationVersion>
+    <ApplicationDisplayVersion Condition="'$(ApplicationDisplayVersion)' == ''">1.0</ApplicationDisplayVersion>
+
+    <!-- Microsoft.Android defaults to Fast Deployment in Debug (no assemblies in APK; pushed
+         separately by /t:Install). VS uses that for the F5 inner loop, but CLI builds rarely
+         invoke /t:Install — a bare `adb install` of a Fast-Deploy APK aborts on launch with
+         "No assemblies found in '.__override__/x86_64'". Embed by default outside VS. -->
+    <EmbedAssembliesIntoApk Condition="'$(EmbedAssembliesIntoApk)' == '' And '$(BuildingInsideVisualStudio)' != 'true'">true</EmbedAssembliesIntoApk>
+  </PropertyGroup>
+
+</Project>
